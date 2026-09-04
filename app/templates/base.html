@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}GitLab MR Review{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  {% block nav %}
+  <nav class="nav">
+    <a class="brand" href="/">GitLab MR Review</a>
+    <a href="#" title="Available in milestone 3">MRs</a>
+    <a href="#" title="Available in milestone 4">Queue</a>
+    <a href="#" title="Available in milestone 6">Results</a>
+    <a href="#" title="Available in milestone 6">Archive</a>
+    <a href="#" title="Available in milestone 3">Settings</a>
+    <form class="logout-form" method="post" action="/logout">
+      <button type="submit">Log out</button>
+    </form>
+  </nav>
+  {% endblock %}
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+  <script src="/static/vendor/htmx.min.js"></script>
+  <script src="/static/vendor/Sortable.min.js"></script>
+</body>
+</html>

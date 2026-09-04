@@ -2,12 +2,16 @@
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db import init_db
+from app.db import get_settings_row, init_db
+from app.deps import SESSION_COOKIE, decode_session, get_db, is_exempt_path, require_auth
+from app.routers import auth
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -16,7 +20,11 @@ def create_app() -> FastAPI:
     settings = get_settings()
     init_db()
 
-    app = FastAPI(title="gitlab-mr-review")
+    # require_auth is wired centrally as a global dependency: every API route
+    # registered on this app (including routers included by later milestones)
+    # is guarded without per-router work. Exempt paths: /login*, /healthz,
+    # /static (see app.deps.EXEMPT_PREFIXES).
+    app = FastAPI(title="gitlab-mr-review", dependencies=[Depends(require_auth)])
     app.state.settings = settings
 
     templates_dir = BASE_DIR / "templates"
@@ -26,9 +34,36 @@ def create_app() -> FastAPI:
     app.state.templates = Jinja2Templates(directory=str(templates_dir))
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+    # The global dependency only covers API routes; FastAPI's /docs, /redoc
+    # and /openapi.json are plain Starlette routes, so a thin middleware
+    # applies the same guard to them.
+    @app.middleware("http")
+    async def guard_plain_routes(request: Request, call_next):
+        if (
+            not is_exempt_path(request.url.path)
+            and decode_session(request.cookies.get(SESSION_COOKIE)) is None
+        ):
+            return RedirectResponse(url="/login", status_code=303)
+        return await call_next(request)
+
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/", response_class=HTMLResponse)
+    def home(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+        row = get_settings_row(db)
+        configured = bool(
+            row.gitlab_url.strip() and row.gitlab_project.strip() and row.gitlab_token.strip()
+        )
+        context = {
+            "configured": configured,
+            "gitlab_url": row.gitlab_url,
+            "gitlab_project": row.gitlab_project,
+        }
+        return app.state.templates.TemplateResponse(request, "home.html", context)
+
+    app.include_router(auth.router)
 
     return app
 

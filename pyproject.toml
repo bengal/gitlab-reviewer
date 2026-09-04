@@ -43,3 +43,7 @@ extend-exclude = ["alembic/versions", ".venv"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's Depends()/Form() in argument defaults are the idiomatic pattern.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Form"]

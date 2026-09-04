@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — GitLab MR Review{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+{% if not configured %}
+<p class="hint">GitLab is not configured yet — set the instance URL, project and
+token in Settings to start reviewing merge requests.</p>
+{% else %}
+<p class="hint">Reviewing project <code>{{ gitlab_project }}</code> on
+<code>{{ gitlab_url }}</code></p>
+{% endif %}
+<div class="cards">
+  <a class="card" href="#" title="Available in milestone 3">
+    <h2>MRs</h2>
+    <p>Open merge requests and their details.</p>
+  </a>
+  <a class="card" href="#" title="Available in milestone 4">
+    <h2>Queue</h2>
+    <p>Schedule reviews now or nightly, reorder the queue.</p>
+  </a>
+  <a class="card" href="#" title="Available in milestone 6">
+    <h2>Results</h2>
+    <p>Browse current review results by severity.</p>
+  </a>
+  <a class="card" href="#" title="Available in milestone 6">
+    <h2>Archive</h2>
+    <p>Inspect archived, historical reviews.</p>
+  </a>
+  <a class="card" href="#" title="Available in milestone 3">
+    <h2>Settings</h2>
+    <p>GitLab connection, model profiles and scheduling.</p>
+  </a>
+</div>
+{% endblock %}
