@@ -1,0 +1,32 @@
+# GitLab MR review web app (quadlet).
+#
+# Spawns one ephemeral review container per review through the host's
+# rootless podman socket (enable it first):
+#   systemctl --user enable --now podman.socket
+#
+# Secrets (DATABASE_URL, SESSION_SECRET, APP_PASSWORD_HASH, SECRET_ENC_KEY,
+# optional ANTHROPIC_API_KEY) come from mrreview.env next to this unit
+# (see README.md).
+[Unit]
+Description=GitLab MR review - web app
+Wants=mrreview.network postgres.container llama-server.container
+After=network-online.target mrreview.network postgres.container llama-server.container
+
+[Container]
+# Build first (context = repository root):
+#   podman build -f deploy/Containerfile -t mrreview-app:latest .
+Image=mrreview-app:latest
+ContainerName=mrreview-app
+Network=mrreview
+# Host rootless podman socket. Adjust the UID to your user; the app process
+# runs as uid 1000 inside the container and must match the socket owner.
+Volume=/run/user/1000/podman/podman.sock:/run/user/1000/podman/podman.sock
+# Required; holds the secrets (copy mrreview.env.example to mrreview.env).
+EnvironmentFile=%d/mrreview.env
+Environment=LLAMA_BASE_URL=http://mrreview-llama:8080
+Environment=PODMAN_NETWORK=mrreview
+Environment=ORCHESTRATOR=podman
+Environment=DISABLE_SCHEDULER=false
+Environment=REVIEW_IMAGE=gitlab-mr-review/review-runner:latest
+Environment=REVIEW_IMAGE_ALLOWLIST=gitlab-mr-review/review-runner
+Environment=REVIEW_TIMEOUT_SECONDS=1800

@@ -1,0 +1,7 @@
+# Shared bridge network for the MR review stack (quadlet).
+#
+# Both the compose and quadlet deployments use the network name "mrreview"
+# so the review containers the app spawns (PODMAN_NETWORK=mrreview) can join
+# it and reach the llama server + GitLab.
+[Network]
+NetworkName=mrreview

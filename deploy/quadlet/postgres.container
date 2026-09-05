@@ -1,0 +1,20 @@
+# PostgreSQL for the GitLab MR review app (quadlet).
+#
+# No published host port: reachable only on the shared network as
+# "mrreview-postgres".
+[Unit]
+Description=GitLab MR review - PostgreSQL
+Wants=mrreview.network
+After=network-online.target mrreview.network
+
+[Container]
+Image=postgres:16-alpine
+ContainerName=mrreview-postgres
+Network=mrreview
+Volume=mrreview_pgdata:/var/lib/postgresql/data
+Environment=POSTGRES_USER=mrreview
+Environment=POSTGRES_PASSWORD=change-me
+Environment=POSTGRES_DB=mrreview
+HealthCmd=pg_isready -U mrreview -d mrreview
+HealthInterval=10s
+HealthRetries=12

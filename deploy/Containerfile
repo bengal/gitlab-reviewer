@@ -1,0 +1,38 @@
+# GitLab MR auto-review — web app image.
+#
+# Build (context = repository root):
+#   podman build -f deploy/Containerfile -t gitlab-mr-review/app:latest .
+#
+# The entrypoint applies DB migrations (alembic upgrade head) and then serves
+# the FastAPI app with uvicorn on 0.0.0.0:8000. The process runs as a
+# non-root user (uid 1000).
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1
+
+# uv manages the project venv; pip is only used to install uv itself.
+RUN python -m pip install --no-cache-dir uv
+
+WORKDIR /app
+
+# Production dependencies only (no dev group). pyproject.toml requires
+# Python >= 3.13, so uv installs a managed CPython 3.13 for the venv; the
+# base image only provides the OS and the uv toolchain.
+COPY pyproject.toml uv.lock ./
+RUN uv python install 3.13 \
+    && uv sync --frozen --no-dev --python 3.13
+
+# Application code, migrations, default review prompt, start script.
+COPY app/ ./app/
+COPY alembic/ ./alembic/
+COPY alembic.ini ./alembic.ini
+COPY deploy/prompts/ ./deploy/prompts/
+COPY deploy/docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x ./docker-entrypoint.sh
+
+RUN useradd --create-home --uid 1000 --user-group mrreview \
+    && chown -R mrreview:mrreview /app
+USER mrreview
+
+EXPOSE 8000
+ENTRYPOINT ["./docker-entrypoint.sh"]

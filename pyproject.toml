@@ -15,6 +15,7 @@ dependencies = [
     "cryptography",
     "pydantic-settings",
     "python-multipart",
+    "psycopg[binary]>=3.3.5",
 ]
 
 [dependency-groups]

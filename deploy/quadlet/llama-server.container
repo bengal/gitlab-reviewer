@@ -1,0 +1,17 @@
+# Shared llama.cpp server for local models (quadlet).
+#
+# Placeholder image: pin the exact tag you pull and adjust Exec= to the
+# image's entrypoint if needed. Reachable only on the shared network as
+# "mrreview-llama".
+[Unit]
+Description=GitLab MR review - llama.cpp server
+Wants=mrreview.network
+After=network-online.target mrreview.network
+
+[Container]
+Image=ghcr.io/ggml-org/llama.cpp:server
+ContainerName=mrreview-llama
+Network=mrreview
+# Model file(s), read-only; create the directory and drop the .gguf into it.
+Volume=/srv/mrreview/models:/models:ro
+Exec=llama-server --model /models/model.gguf --host 0.0.0.0 --port 8080

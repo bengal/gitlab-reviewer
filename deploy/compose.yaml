@@ -1,0 +1,90 @@
+# GitLab MR auto-review tool — podman compose deployment.
+#
+# Three services on one shared bridge network; NO host ports are published
+# (see PLAN.md "Deployment"):
+#
+#   app           FastAPI web app + in-process scheduler (deploy/Containerfile)
+#   llama-server  shared local model endpoint, OpenAI-compatible /v1 (placeholder image)
+#   postgres      database, named volume, reachable only on the network
+#
+# The app spawns a fresh sibling review container per review through the
+# host's rootless podman socket (mounted below), so before starting:
+#
+#   systemctl --user enable --now podman.socket
+#   podman build -t gitlab-mr-review/review-runner:latest containers/review-runner/
+#
+# Usage:
+#   cp .env.example .env      # fill in SESSION_SECRET, APP_PASSWORD_HASH, SECRET_ENC_KEY, ...
+#   podman compose -f deploy/compose.yaml up -d
+#
+# Note: the app container's process runs as uid 1000 and must match the owner
+# of the mounted podman socket (the default path assumes a host user with
+# uid 1000).
+
+name: gitlab-mr-review
+
+networks:
+  review:
+    # Fixed name so the review containers the app spawns (PODMAN_NETWORK)
+    # can join it by name and reach llama-server + GitLab.
+    name: mrreview
+
+volumes:
+  postgres-data:
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Containerfile
+    image: gitlab-mr-review/app:latest
+    networks: [review]
+    volumes:
+      # Host rootless podman socket (env-overridable). Review containers are
+      # created by the HOST's podman via this socket and join network
+      # PODMAN_NETWORK (default: mrreview).
+      - ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}:/run/user/1000/podman/podman.sock
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mrreview:mrreview@postgres:5432/mrreview}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+      APP_PASSWORD_HASH: ${APP_PASSWORD_HASH:?set APP_PASSWORD_HASH in .env}
+      SECRET_ENC_KEY: ${SECRET_ENC_KEY:?set SECRET_ENC_KEY in .env}
+      # Rewritten from the host-side URL to the in-network service name.
+      LLAMA_BASE_URL: http://llama-server:8080
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      REVIEW_IMAGE: ${REVIEW_IMAGE:-gitlab-mr-review/review-runner:latest}
+      REVIEW_IMAGE_ALLOWLIST: ${REVIEW_IMAGE_ALLOWLIST:-gitlab-mr-review/review-runner}
+      PODMAN_NETWORK: ${PODMAN_NETWORK:-mrreview}
+      REVIEW_TIMEOUT_SECONDS: ${REVIEW_TIMEOUT_SECONDS:-1800}
+      ORCHESTRATOR: podman
+      DISABLE_SCHEDULER: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  llama-server:
+    # Placeholder image tag — pin the exact tag you pull. The model file is
+    # mounted read-only from the host; the port is reachable only on the
+    # shared network (no published host port).
+    image: ghcr.io/ggml-org/llama.cpp:server
+    networks: [review]
+    volumes:
+      - ${LLAMA_MODEL_DIR:-./models}:/models:ro
+    command: [llama-server, --model, "/models/${LLAMA_MODEL_FILE:-model.gguf}", --host, 0.0.0.0, --port, "8080"]
+    expose:
+      - "8080"
+
+  postgres:
+    image: postgres:16-alpine
+    networks: [review]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mrreview}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mrreview}
+      POSTGRES_DB: ${POSTGRES_DB:-mrreview}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mrreview} -d ${POSTGRES_DB:-mrreview}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
