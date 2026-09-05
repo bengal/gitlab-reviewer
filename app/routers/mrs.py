@@ -2,12 +2,12 @@
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_settings_row
 from app.deps import get_db
-from app.models import MergeRequest, ModelProfile
+from app.models import JobStatus, MergeRequest, ModelProfile, ReviewRun, ScheduledJob
 from app.services.mr_sync import sync_open_mrs
 
 router = APIRouter()
@@ -31,6 +31,34 @@ def _list_mrs(db: Session, row) -> list[MergeRequest]:
     )
 
 
+def _review_counts(db: Session, mrs: list[MergeRequest]) -> dict[int, tuple[int, int]]:
+    """Per-MR (review runs so far, queued jobs) counts for the list columns."""
+    counts = {mr.id: (0, 0) for mr in mrs}
+    if not mrs:
+        return counts
+    mr_ids = [mr.id for mr in mrs]
+    runs = dict(
+        db.execute(
+            select(ReviewRun.merge_request_id, func.count(ReviewRun.id))
+            .where(ReviewRun.merge_request_id.in_(mr_ids))
+            .group_by(ReviewRun.merge_request_id)
+        ).all()
+    )
+    queued = dict(
+        db.execute(
+            select(ScheduledJob.merge_request_id, func.count(ScheduledJob.id))
+            .where(
+                ScheduledJob.merge_request_id.in_(mr_ids),
+                ScheduledJob.status == JobStatus.queued.value,
+            )
+            .group_by(ScheduledJob.merge_request_id)
+        ).all()
+    )
+    for mr in mrs:
+        counts[mr.id] = (runs.get(mr.id, 0), queued.get(mr.id, 0))
+    return counts
+
+
 @router.get("/mrs", response_class=HTMLResponse)
 def mr_list(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     row = get_settings_row(db)
@@ -42,6 +70,7 @@ def mr_list(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         {
             "configured": configured,
             "mrs": mrs,
+            "review_counts": _review_counts(db, mrs),
             "default_branch": row.gitlab_default_branch,
             "sync_message": None,
             "sync_error": False,
@@ -57,19 +86,27 @@ def mr_sync(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         return _templates(request).TemplateResponse(
             request,
             "mrs/partials/list.html",
-            {"configured": False, "mrs": [], "sync_message": None, "sync_error": False},
+            {
+                "configured": False,
+                "mrs": [],
+                "review_counts": {},
+                "sync_message": None,
+                "sync_error": False,
+            },
         )
     added, updated, unchanged, error = sync_open_mrs(db)
     if error:
         message, failed = f"Sync failed: {error}", True
     else:
         message, failed = f"Synced: {added} added, {updated} updated, {unchanged} unchanged.", False
+    mrs = _list_mrs(db, row)
     return _templates(request).TemplateResponse(
         request,
         "mrs/partials/list.html",
         {
             "configured": True,
-            "mrs": _list_mrs(db, row),
+            "mrs": mrs,
+            "review_counts": _review_counts(db, mrs),
             "default_branch": row.gitlab_default_branch,
             "sync_message": message,
             "sync_error": failed,

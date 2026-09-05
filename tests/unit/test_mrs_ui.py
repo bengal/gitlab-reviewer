@@ -7,12 +7,21 @@ test the connection.
 """
 
 import json
+import re
 
 import pytest
 from sqlalchemy import select
 
 from app.db import get_settings_row
-from app.models import MergeRequest
+from app.models import (
+    JobStatus,
+    MergeRequest,
+    ModelProfile,
+    ReviewRun,
+    RunStatus,
+    ScheduledJob,
+    ScheduleType,
+)
 from app.schemas.mr import MrSnapshot
 from app.security import decrypt_secret, encrypt_secret
 from app.services import mr_sync
@@ -195,6 +204,68 @@ def test_mr_detail_unknown_iid_404(authed, db):
     configure_row(db)
     resp = authed.get("/mrs/999")
     assert resp.status_code == 404
+
+
+# -- review counts + batch scheduling -------------------------------------------
+
+
+def _seed_history(db, mr, *, runs=0, queued=0):
+    """Create `runs` finished review runs and `queued` queued jobs for `mr`."""
+    profile = db.scalar(select(ModelProfile).where(ModelProfile.name == "history"))
+    if profile is None:
+        profile = ModelProfile(name="history", provider="anthropic", model_id="claude-sonnet-4")
+        db.add(profile)
+        db.flush()
+    for position in range(1, runs + 1):
+        job = ScheduledJob(
+            merge_request_id=mr.id,
+            model_profile_id=profile.id,
+            schedule_type=ScheduleType.immediate.value,
+            position=position,
+            status=JobStatus.done.value,
+        )
+        db.add(job)
+        db.flush()
+        db.add(
+            ReviewRun(
+                scheduled_job_id=job.id,
+                merge_request_id=mr.id,
+                model_profile_id=profile.id,
+                status=RunStatus.success.value,
+            )
+        )
+    for position in range(1, queued + 1):
+        db.add(
+            ScheduledJob(
+                merge_request_id=mr.id,
+                model_profile_id=profile.id,
+                schedule_type=ScheduleType.nightly.value,
+                position=position,
+                status=JobStatus.queued.value,
+            )
+        )
+    db.commit()
+    return profile
+
+
+def _row_cells(resp, iid):
+    """The <td> contents of the list row for MR !<iid> (in column order)."""
+    row_html = re.search(rf'href="/mrs/{iid}">!{iid}.*?</tr>', resp.text, re.S).group(0)
+    return re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.S)
+
+
+def test_mrs_list_shows_review_and_scheduled_counts(authed, db, monkeypatch):
+    configure_row(db)
+    install_fake_client(monkeypatch)
+    authed.post("/mrs/sync")
+    by_iid = {mr.iid: mr for mr in db.scalars(select(MergeRequest))}
+    _seed_history(db, by_iid[1], runs=3, queued=2)
+    _seed_history(db, by_iid[2], runs=0, queued=1)
+
+    resp = authed.get("/mrs")
+    assert resp.status_code == 200
+    assert _row_cells(resp, 1)[-2:] == ["3", "2"]
+    assert _row_cells(resp, 2)[-2:] == ["0", "1"]
 
 
 # -- /settings -----------------------------------------------------------------

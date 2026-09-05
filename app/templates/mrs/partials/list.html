@@ -21,10 +21,13 @@
         <th>Branches</th>
         <th class="nowrap">SHA</th>
         <th class="nowrap">State</th>
+        <th class="nowrap" title="Reviews executed for this MR">Reviews</th>
+        <th class="nowrap" title="Reviews currently queued for this MR">Scheduled</th>
       </tr>
     </thead>
     <tbody>
       {% for mr in mrs %}
+      {% set counts = review_counts.get(mr.id, (0, 0)) %}
       <tr>
         <td class="nowrap"><a href="/mrs/{{ mr.iid }}">!{{ mr.iid }}</a></td>
         <td>
@@ -40,6 +43,8 @@
         </td>
         <td class="nowrap"><code>{{ mr.sha[:8] }}</code></td>
         <td class="nowrap">{{ mr.state }}</td>
+        <td class="nowrap">{{ counts[0] }}</td>
+        <td class="nowrap">{{ counts[1] }}</td>
       </tr>
       {% endfor %}
     </tbody>
