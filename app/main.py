@@ -1,5 +1,6 @@
 """FastAPI application factory."""
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
@@ -11,8 +12,11 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db import get_settings_row, init_db
 from app.deps import SESSION_COOKIE, decode_session, get_db, is_exempt_path, require_auth
+from app.orchestrator import create_orchestrator
 from app.routers import auth, mrs, queue
 from app.routers import settings as settings_router
+from app.scheduler import init_scheduler
+from app.scheduler.state import set_app
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -21,12 +25,27 @@ def create_app() -> FastAPI:
     settings = get_settings()
     init_db()
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        scheduler = init_scheduler(app)
+        if scheduler is not None:
+            scheduler.start()
+        try:
+            yield
+        finally:
+            if scheduler is not None and scheduler.running:
+                scheduler.shutdown(wait=False)
+
     # require_auth is wired centrally as a global dependency: every API route
     # registered on this app (including routers included by later milestones)
     # is guarded without per-router work. Exempt paths: /login*, /healthz,
     # /static (see app.deps.EXEMPT_PREFIXES).
-    app = FastAPI(title="gitlab-mr-review", dependencies=[Depends(require_auth)])
+    app = FastAPI(title="gitlab-mr-review", lifespan=lifespan, dependencies=[Depends(require_auth)])
     app.state.settings = settings
+    # Execution backend for the worker (M6a): FakeOrchestrator when
+    # ORCHESTRATOR=fake, PodmanOrchestrator otherwise.
+    app.state.orchestrator = create_orchestrator(settings)
+    set_app(app)
 
     templates_dir = BASE_DIR / "templates"
     static_dir = BASE_DIR / "static"

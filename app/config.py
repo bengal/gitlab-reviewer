@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Hard per-review timeout in seconds (30 minutes).
     review_timeout_seconds: int = 1800
     orchestrator: Literal["podman", "fake"] = "podman"
+    # Set to disable the background scheduler entirely (tests/dev): no queue
+    # pump, no nightly cron. Pumps can still be driven manually (worker.pump_once).
+    disable_scheduler: bool = False
 
 
 @lru_cache

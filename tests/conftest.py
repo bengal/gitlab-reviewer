@@ -24,6 +24,9 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setenv("SECRET_ENC_KEY", _TEST_FERNET_KEY)
     monkeypatch.setenv("REVIEW_IMAGE", "gitlab-mr-review/review-runner:test")
     monkeypatch.setenv("ORCHESTRATOR", "fake")
+    # No background pump/cron in tests: pumps are driven manually
+    # (worker.pump_once) so tests stay deterministic.
+    monkeypatch.setenv("DISABLE_SCHEDULER", "1")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     from app.config import get_settings
