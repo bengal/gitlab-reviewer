@@ -21,6 +21,11 @@ Implements the MILESTONES.md "Milestone 5" entrypoint steps exactly:
    result_json schema; on parse failure write the raw output to
    ``result.md`` and still exit 0; timeout -> partial log + exit 124;
 8. always write a final ``EXIT=<code>`` log line.
+
+Secrets (GITLAB_TOKEN, OPENCODE_API_KEY) never reach any log: /out is a
+host bind mount, so everything written there (review.log, result.md,
+result.json) is scrubbed of the run's secret values before it hits disk —
+the LLM can echo a secret it saw in the diff or its own output.
 """
 
 import json
@@ -46,6 +51,34 @@ FINDING_BUCKETS = ("critical", "important", "minor", "positive")
 
 _FENCED_JSON_RE = re.compile(r"```json[ \t]*\r?\n(.*?)```", re.DOTALL)
 
+# Secrets shorter than this are not worth scrubbing for (same threshold as
+# app/orchestrator/run_review.py); below it, replacement would mangle output.
+MIN_SCRUB_LEN = 8
+
+_SCRUB_SECRETS = [
+    value
+    for value in (os.environ.get("GITLAB_TOKEN"), os.environ.get("OPENCODE_API_KEY"))
+    if value and len(value) >= MIN_SCRUB_LEN
+]
+
+
+def scrub(text: str) -> str:
+    """Replace each run secret with ``***`` (no-op when none are set)."""
+    for secret in _SCRUB_SECRETS:
+        text = text.replace(secret, "***")
+    return text
+
+
+def scrub_value(value: object) -> object:
+    """Recursively scrub every string in a parsed JSON structure."""
+    if isinstance(value, str):
+        return scrub(value)
+    if isinstance(value, dict):
+        return {scrub(str(key)): scrub_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [scrub_value(item) for item in value]
+    return value
+
 REQUIRED_ENV = (
     "GITLAB_URL",
     "TARGET_PROJECT",
@@ -60,7 +93,12 @@ REQUIRED_ENV = (
 
 def log(message: str) -> None:
     """Append a line to the review log and mirror it on stdout, where the
-    podman orchestrator streams it into review_run.log."""
+    podman orchestrator streams it into review_run.log.
+
+    The message is scrubbed of the run's secrets first: LOG_PATH lives on
+    the host's bind mount, so the file must not carry raw secret values.
+    """
+    message = scrub(message)
     print(message, flush=True)
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -346,11 +384,14 @@ def run() -> int:
     result = _extract_result(output)
     if result is not None:
         RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        RESULT_PATH.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        # /out is a host bind mount: scrub the (untrusted) LLM result before
+        # it hits the host filesystem.
+        rendered = json.dumps(scrub_value(result), indent=2, ensure_ascii=False) + "\n"
+        RESULT_PATH.write_text(rendered, encoding="utf-8")
         log(f"wrote structured result -> {RESULT_PATH}")
     elif output.strip():
         RESULT_MD_PATH.parent.mkdir(parents=True, exist_ok=True)
-        RESULT_MD_PATH.write_text(output, encoding="utf-8")
+        RESULT_MD_PATH.write_text(scrub(output), encoding="utf-8")
         log(f"no valid fenced json block; wrote raw markdown fallback -> {RESULT_MD_PATH}")
     else:
         log("no valid fenced json block and no output to fall back to")

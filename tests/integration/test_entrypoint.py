@@ -115,6 +115,10 @@ def fake_opencode(tmp_path):
         "  sleep)\n"
         "    exec sleep 30\n"
         "    ;;\n"
+        "  leak)\n"
+        '    echo "git: authenticated with password=${GITLAB_TOKEN}"\n'
+        '    echo "The model output echoes ${GITLAB_TOKEN} in prose."\n'
+        "    ;;\n"
         "esac\n",
         encoding="utf-8",
     )
@@ -213,6 +217,25 @@ def test_entrypoint_prose_fallback(tmp_path, gitlab, fake_opencode):
     log_text = (out_dir / "review.log").read_text(encoding="utf-8")
     assert "raw markdown fallback" in log_text
     assert log_text.rstrip("\n").endswith("EXIT=0")
+
+
+def test_entrypoint_scrubs_secrets_from_host_mounted_files(tmp_path, gitlab, fake_opencode):
+    """/out is a host bind mount: opencode output echoing the token must never
+    reach review.log, result.md or stdout unscrubbed."""
+    proc = _run_entrypoint(tmp_path, gitlab, fake_opencode, "leak")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    out_dir = tmp_path / "out"
+    log_text = (out_dir / "review.log").read_text(encoding="utf-8")
+    assert FAKE_TOKEN not in log_text
+    assert "***" in log_text
+
+    # no fenced json in the leak output -> markdown fallback, also scrubbed
+    markdown = (out_dir / "result.md").read_text(encoding="utf-8")
+    assert FAKE_TOKEN not in markdown
+    assert "***" in markdown
+
+    assert FAKE_TOKEN not in proc.stdout
 
 
 def test_entrypoint_timeout(tmp_path, gitlab, fake_opencode):

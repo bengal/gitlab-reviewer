@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from app.db import get_settings_row
 from app.models import JobStatus, MergeRequest, ModelProfile, ReviewRun, RunStatus, ScheduledJob
 from app.orchestrator import RunOutcome
-from app.orchestrator.run_review import build_env, scrub_secrets, secret_env_values
+from app.orchestrator.run_review import build_env, scrub_json, scrub_secrets, secret_env_values
 from app.scheduler.state import get_app
 from app.services.gitlab_client import GitLabClient
 from app.services.result_render import render_result_markdown
@@ -93,12 +93,15 @@ def execute_job(db: Session, run: ReviewRun, job: ScheduledJob) -> None:
         log.exception("orchestrator raised for run %s", run.id)
         outcome = RunOutcome(exit_code=1, error=f"orchestrator crashed: {exc!r}")
 
-    # Defense in depth: orchestrators may stream un-scrubbed content
-    # (e.g. the fake), so scrub every stored text field again.
+    # Defense in depth: orchestrators may deliver un-scrubbed content
+    # (e.g. the fake, or an LLM that echoes a secret into its JSON result),
+    # so scrub every stored text field again.
     if outcome.error:
         outcome.error = scrub_secrets(outcome.error, secrets)
     if outcome.result_markdown:
         outcome.result_markdown = scrub_secrets(outcome.result_markdown, secrets)
+    if outcome.result_json is not None:
+        outcome.result_json = scrub_json(outcome.result_json, secrets)
     container_id = _extract_container_id(log_lines)
     if container_id:
         run.container_id = container_id

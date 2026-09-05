@@ -95,3 +95,20 @@ def scrub_secrets(text: str, secrets: list[str] | tuple[str, ...]) -> str:
         if secret and len(secret) >= MIN_SCRUB_LEN:
             text = text.replace(secret, "***")
     return text
+
+
+def scrub_json(value: object, secrets: list[str] | tuple[str, ...]) -> object:
+    """Recursively scrub secret values out of a parsed JSON structure.
+
+    result_json comes from untrusted LLM output (the container can echo a
+    secret it saw in the diff or its own streamed logs), so every string in
+    the structure — values and keys alike — is scrubbed before the result is
+    stored in the DB, rendered in the UI, or posted to GitLab.
+    """
+    if isinstance(value, str):
+        return scrub_secrets(value, secrets)
+    if isinstance(value, dict):
+        return {scrub_secrets(str(key), secrets): scrub_json(item, secrets) for key, item in value.items()}
+    if isinstance(value, list):
+        return [scrub_json(item, secrets) for item in value]
+    return value

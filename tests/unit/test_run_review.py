@@ -10,7 +10,7 @@ import pytest
 from app.db import get_settings_row
 from app.models import MergeRequest, ModelProfile, ReviewRun, ScheduleType
 from app.orchestrator.podman_client import PodmanOrchestrator
-from app.orchestrator.run_review import MIN_SCRUB_LEN, build_env, scrub_secrets
+from app.orchestrator.run_review import MIN_SCRUB_LEN, build_env, scrub_json, scrub_secrets
 from app.security import encrypt_secret
 from app.services import scheduling
 
@@ -183,6 +183,30 @@ def test_scrub_secrets_short_values_ignored():
     assert scrub_secrets("", ["whatever-long-enough"]) == ""
     assert scrub_secrets("nothing here", []) == "nothing here"
     assert scrub_secrets("x", [None, ""]) == "x"
+
+
+def test_scrub_json_recurses_through_structure():
+    secrets = ["glpat-abc123def456", "sk-ant-secret789"]
+    value = {
+        "summary": "token glpat-abc123def456 here",
+        "findings": {"important": [{"description": "key sk-ant-secret789 quoted"}]},
+        "glpat-abc123def456": "even keys are scrubbed",
+        "questions": ["sk-ant-secret789", "plain", 3],
+        "count": 7,
+    }
+    out = scrub_json(value, secrets)
+    assert out == {
+        "summary": "token *** here",
+        "findings": {"important": [{"description": "key *** quoted"}]},
+        "***": "even keys are scrubbed",
+        "questions": ["***", "plain", 3],
+        "count": 7,
+    }
+    # non-container values pass through untouched
+    assert scrub_json(5, secrets) == 5
+    assert scrub_json(None, secrets) is None
+    assert scrub_json([], secrets) == []
+    assert scrub_json("short", ["x"]) == "short"  # below MIN_SCRUB_LEN
 
 
 # -- PodmanOrchestrator argv -------------------------------------------------
