@@ -7,7 +7,12 @@ from app.models import ModelProfile
 from app.orchestrator.opencode_template import render_opencode_json, render_opencode_json_file
 from app.security import encrypt_secret
 
-PERMISSIONS = {"bash": "allow", "edit": "allow", "webfetch": "allow"}
+PERMISSIONS = {
+    "bash": "allow",
+    "edit": "allow",
+    "webfetch": "allow",
+    "external_directory": "allow",
+}
 
 
 def _profile(**kwargs) -> ModelProfile:

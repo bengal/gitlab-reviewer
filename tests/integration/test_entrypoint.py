@@ -203,7 +203,12 @@ def test_entrypoint_json_result(tmp_path, gitlab, extra_repo, fake_opencode):
         "npm": "@ai-sdk/openai-compatible",
         "options": {"baseURL": "http://127.0.0.1:59999/v1"},
     }
-    assert config["permission"] == {"bash": "allow", "edit": "allow", "webfetch": "allow"}
+    assert config["permission"] == {
+        "bash": "allow",
+        "edit": "allow",
+        "webfetch": "allow",
+        "external_directory": "allow",
+    }
 
 
 def test_entrypoint_prose_fallback(tmp_path, gitlab, fake_opencode):

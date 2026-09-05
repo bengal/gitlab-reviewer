@@ -6,7 +6,8 @@ env, so the two can be asserted to agree. Shape (per provider):
     {
       "provider": {"<provider>": {"npm": "<ai-sdk package>", "options": {...}}},
       "model": "<provider>/<model_id>",
-      "permission": {"bash": "allow", "edit": "allow", "webfetch": "allow"}
+      "permission": {"bash": "allow", "edit": "allow", "webfetch": "allow",
+                      "external_directory": "allow"}
     }
 
 ``profile.extra_opencode_json`` is deep-merged over the rendered config (so it
@@ -26,7 +27,15 @@ OPENAI_COMPATIBLE_NPM = "@ai-sdk/openai-compatible"
 
 # Headless opencode must never hang waiting for an interactive permission
 # answer, so these are always allowed (see PLAN "Key risks").
-DEFAULT_PERMISSIONS: dict[str, str] = {"bash": "allow", "edit": "allow", "webfetch": "allow"}
+# external_directory defaults to "ask" in opencode and aborts a headless run
+# the moment a tool touches a path outside the working dir (e.g. /tmp); the
+# container itself is the sandbox, so allow it.
+DEFAULT_PERMISSIONS: dict[str, str] = {
+    "bash": "allow",
+    "edit": "allow",
+    "webfetch": "allow",
+    "external_directory": "allow",
+}
 
 
 def _provider_block(profile: ModelProfile) -> dict[str, Any]:
