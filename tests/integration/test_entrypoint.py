@@ -236,6 +236,31 @@ def test_entrypoint_json_result(tmp_path, gitlab, extra_repo, fake_opencode):
     }
 
 
+def test_entrypoint_uses_pre_mounted_library(tmp_path, gitlab, fake_opencode):
+    """When /work/lib/<path> already exists (the app bind-mounts a persistent
+    host-side checkout there), the entrypoint must use it as-is and NOT
+    clone — the url is deliberately unresolvable, so a clone attempt would
+    fail the run."""
+    lib = tmp_path / "work" / "lib" / "liba"
+    lib.mkdir(parents=True)
+    (lib / "mounted.txt").write_text("from host\n", encoding="utf-8")
+    proc = _run_entrypoint(
+        tmp_path,
+        gitlab,
+        fake_opencode,
+        "json",
+        extra_projects=[
+            {"url": (tmp_path / "no-such-repo.git").as_uri(), "ref": "main", "path": "liba"}
+        ],
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    assert (lib / "mounted.txt").read_text(encoding="utf-8") == "from host\n"
+    log_text = (tmp_path / "out" / "review.log").read_text(encoding="utf-8")
+    assert "using bind-mounted library checkout" in log_text
+    assert "cloning extra library repo" not in log_text
+
+
 def test_entrypoint_fork_mr_clones_via_mr_ref(tmp_path, fake_opencode):
     """Fork MR: the source branch is not on the target project's remote;
     only refs/merge-requests/<iid>/head reaches the MR head (the clone must

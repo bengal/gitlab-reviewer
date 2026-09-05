@@ -13,6 +13,12 @@ ENV PYTHONUNBUFFERED=1
 # uv manages the project venv; pip is only used to install uv itself.
 RUN python -m pip install --no-cache-dir uv
 
+# git: the app keeps persistent checkouts of the library repos on the host
+# (LIBRARY_CHECKOUT_DIR) and clones/re-pulls them from here.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Production dependencies only (no dev group). pyproject.toml requires

@@ -21,6 +21,10 @@ Security model (see PLAN "Key risks"):
   enforcing hosts relabel it ``container_file_t``; without that the
   ``container_t`` domain is denied the host's ``user_tmp_t`` label and the
   same EACCES occurs even with correct ownership;
+- the persistent library checkouts (``LIBRARY_CHECKOUT_DIR``, see
+  ``app.orchestrator.libraries``) are bound into ``/work/lib/<path>`` with
+  ``ro`` — the model can read cross-repo context but never modify the
+  shared host checkouts;
 - secrets travel only in the subprocess environment (argv carries ``-e KEY``
   names, never values);
 - streamed stdout/stderr is scrubbed of secret values before reaching the
@@ -46,7 +50,9 @@ from app.config import Settings, get_settings
 from app.db import get_db_session, get_settings_row
 from app.models import MergeRequest, ModelProfile
 from app.orchestrator import RunOutcome
+from app.orchestrator.libraries import ensure_libraries, library_checkout_root
 from app.orchestrator.run_review import build_env, scrub_secrets, secret_env_values
+from app.security import decrypt_secret
 
 _POLL_SECONDS = 0.05
 _STALE_CONTAINER_SECONDS = 24 * 3600
@@ -99,9 +105,20 @@ class PodmanOrchestrator:
         entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
         return entries or [self._settings.review_image]
 
-    def build_argv(self, *, env: dict[str, str], out_dir: str | Path, name: str) -> list[str]:
+    def build_argv(
+        self,
+        *,
+        env: dict[str, str],
+        out_dir: str | Path,
+        name: str,
+        lib_mounts: list[tuple[str, str]] | None = None,
+    ) -> list[str]:
         """``podman run`` argv for one run (no ``--rm``: see module docstring
         for the keep-on-failure lifecycle).
+
+        ``lib_mounts`` is a list of ``(host_path, /work/lib-relative path)``
+        pairs for the persistent library checkouts, bound read-only (they are
+        context the model may read but never write).
 
         Env values are deliberately NOT in argv: each key is passed as
         ``-e KEY`` (podman picks the value up from this process' environment,
@@ -123,6 +140,8 @@ class PodmanOrchestrator:
         # Z: private SELinux relabel (container_file_t) for enforcing hosts;
         # a no-op where SELinux is off.
         argv += ["--mount", f"type=bind,src={out_dir},dst=/out,Z"]
+        for host_path, lib_relpath in lib_mounts or []:
+            argv += ["--mount", f"type=bind,src={host_path},dst=/work/lib/{lib_relpath},ro,Z"]
         argv.append(self._image)
         return argv
 
@@ -143,13 +162,30 @@ class PodmanOrchestrator:
         self._purge_stale_containers()
         env = build_env(job, profile, settings_row, mr=mr)
         scrub_with = secret_env_values(env)
-        out_dir = Path(tempfile.mkdtemp(prefix="mr-review-out-"))
-        name = f"mr-review-{run.id or 0}-{secrets.token_hex(4)}"
-        argv = self.build_argv(env=env, out_dir=out_dir, name=name)
 
         def emit(line: str) -> None:
             if log_chunk is not None:
                 log_chunk(scrub_secrets(line, scrub_with))
+
+        # Persistent host-side checkouts of the extra (library) repos,
+        # mounted read-only into the container (see app.orchestrator.libraries).
+        lib_mounts: list[tuple[str, str]]
+        try:
+            lib_mounts = ensure_libraries(
+                job.extra_projects or [],
+                root=library_checkout_root(self._settings),
+                gitlab_token=decrypt_secret(settings_row.gitlab_token)
+                if settings_row.gitlab_token
+                else "",
+                max_age_hours=self._settings.library_pull_max_age_hours,
+                log_line=emit,
+            )
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            return RunOutcome(exit_code=1, error=f"library checkout failed: {exc}")
+
+        out_dir = Path(tempfile.mkdtemp(prefix="mr-review-out-"))
+        name = f"mr-review-{run.id or 0}-{secrets.token_hex(4)}"
+        argv = self.build_argv(env=env, out_dir=out_dir, name=name, lib_mounts=lib_mounts)
 
         try:
             timed_out, exit_code = self._run_streaming(argv, env, emit)

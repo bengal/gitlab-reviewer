@@ -4,6 +4,7 @@ allowlist, timeout and result capture (subprocess fully faked)."""
 import json
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -243,6 +244,20 @@ def test_podman_argv_shape_and_caps(app):
     assert "GITLAB_TOKEN=" not in joined
 
 
+def test_podman_argv_lib_mounts_read_only(app):
+    orch = PodmanOrchestrator()
+    argv = orch.build_argv(
+        env={"GITLAB_URL": "https://gitlab.example.com"},
+        out_dir="/tmp/out-123",
+        name="mr-review-1-abc123",
+        lib_mounts=[("/srv/libs/liba", "liba"), ("/srv/libs/group/libb", "group/libb")],
+    )
+    # library checkouts are bound read-only; /out stays writable
+    assert "type=bind,src=/tmp/out-123,dst=/out,Z" in argv
+    assert "type=bind,src=/srv/libs/liba,dst=/work/lib/liba,ro,Z" in argv
+    assert "type=bind,src=/srv/libs/group/libb,dst=/work/lib/group/libb,ro,Z" in argv
+
+
 def test_podman_image_allowlist_rejects_bad_image(app):
     with pytest.raises(ValueError, match="allowlist"):
         PodmanOrchestrator(image="docker.io/evil/runner:latest")
@@ -353,6 +368,116 @@ def test_podman_success_path_streams_and_reads_results(app, db, mr, profile, set
     assert captured["env"]["GITLAB_TOKEN"] == GITLAB_TOKEN
     assert GITLAB_TOKEN not in " ".join(captured["argv"])
     assert "OPENCODE_API_KEY" not in captured["env"]  # profile has no key
+
+
+def _git(args: list[str], cwd: Path) -> None:
+    subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True)
+
+
+def _make_lib_remote(tmp_path) -> Path:
+    """A local bare repo (file://) standing in for a library remote."""
+    remote = tmp_path / "libremote"
+    remote.mkdir()
+    bare = remote / "liba.git"
+    _git(["init", "--bare", "-b", "main", str(bare)], cwd=remote)
+    push = remote / "push"
+    push.mkdir()
+    _git(["init", "-b", "main", str(push)], cwd=push)
+    _git(["config", "user.email", "lib@example.com"], cwd=push)
+    _git(["config", "user.name", "Lib"], cwd=push)
+    (push / "lib.txt").write_text("library\n", encoding="utf-8")
+    _git(["add", "lib.txt"], cwd=push)
+    _git(["commit", "-m", "lib"], cwd=push)
+    _git(["remote", "add", "origin", str(bare)], cwd=push)
+    _git(["push", "origin", "main"], cwd=push)
+    return bare
+
+
+def test_podman_run_clones_and_mounts_library_checkouts(
+    app, db, mr, profile, settings_row, tmp_path, monkeypatch
+):
+    bare = _make_lib_remote(tmp_path)
+    lib_root = tmp_path / "libs"
+    monkeypatch.setenv("LIBRARY_CHECKOUT_DIR", str(lib_root))
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+
+    settings_row.gitlab_token = encrypt_secret(GITLAB_TOKEN)
+    db.commit()
+    job = _enqueue(
+        db, mr, profile, extra_projects=[{"url": bare.as_uri(), "ref": "main", "path": "liba"}]
+    )
+    run = ReviewRun(scheduled_job_id=job.id, merge_request_id=mr.id, model_profile_id=profile.id)
+    db.add(run)
+    db.commit()
+
+    captured = {}
+    real_popen = subprocess.Popen
+
+    def fake_popen(argv, **kwargs):
+        if argv[0] == "git":  # the host-side checkout prep runs for real
+            return real_popen(argv, **kwargs)
+        if argv[1] in ("ps", "rm"):  # container lifecycle housekeeping
+            return _FakeProc([], exit_code=0)
+        captured["argv"] = argv
+        out_src = next(a for a in argv if a.startswith("type=bind,src=")).split("src=")[1].split(",")[0]
+        with open(f"{out_src}/result.json", "w", encoding="utf-8") as fh:
+            json.dump({"summary": "ok", "findings": {"critical": []}}, fh)
+        return _FakeProc(["cid-abc123", "done"], exit_code=0)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    logs: list[str] = []
+    outcome = PodmanOrchestrator(timeout_seconds=5).run_review(run, job, log_chunk=logs.append)
+
+    assert outcome.exit_code == 0
+    # the checkout is bind-mounted read-only into /work/lib/liba
+    assert f"type=bind,src={lib_root / 'liba'},dst=/work/lib/liba,ro,Z" in captured["argv"]
+    # the host-side checkout was created for the run
+    assert (lib_root / "liba" / ".git").is_dir()
+    assert (lib_root / "liba" / "lib.txt").read_text(encoding="utf-8") == "library\n"
+    # the token never reaches any argv (git gets it via the credential-helper env)
+    assert GITLAB_TOKEN not in " ".join(captured["argv"])
+    # the checkout prep is streamed (scrubbed) into the run log
+    assert any("liba" in line for line in logs)
+
+
+def test_podman_run_fails_when_initial_library_clone_fails(
+    app, db, mr, profile, settings_row, tmp_path, monkeypatch
+):
+    lib_root = tmp_path / "libs"
+    monkeypatch.setenv("LIBRARY_CHECKOUT_DIR", str(lib_root))
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+
+    job = _enqueue(
+        db,
+        mr,
+        profile,
+        extra_projects=[{"url": (tmp_path / "no-such-repo.git").as_uri(), "path": "liba"}],
+    )
+    run = ReviewRun(scheduled_job_id=job.id, merge_request_id=mr.id, model_profile_id=profile.id)
+    db.add(run)
+    db.commit()
+
+    real_popen = subprocess.Popen
+    popens: list[list[str]] = []
+
+    def fake_popen(argv, **kwargs):
+        popens.append(list(argv))
+        if argv[0] == "podman" and argv[1] in ("ps", "rm"):
+            return _FakeProc([], exit_code=0)
+        if argv[0] == "podman":
+            pytest.fail("podman run must not start when the library checkout fails")
+        return real_popen(argv, **kwargs)  # git clone runs for real (and fails)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    outcome = PodmanOrchestrator(timeout_seconds=5).run_review(run, job)
+
+    assert outcome.exit_code == 1
+    assert "library checkout failed" in outcome.error
+    assert outcome.result_json is None
 
 
 def test_podman_timeout_sets_timed_out_and_kills(app, db, mr, profile, settings_row, monkeypatch):

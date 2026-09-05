@@ -4,12 +4,15 @@
 Implements the MILESTONES.md "Milestone 5" entrypoint steps exactly:
 
 1. read the run environment (see ``app/orchestrator/run_review.build_env``);
-2. clone the target repo into ``/work/target`` with a git credential helper
-   (the token never appears in any argv), check out the MR head via GitLab's
-   ``refs/merge-requests/<iid>/head`` ref (which works for fork MRs and
-   deleted branches too, falling back to SOURCE_BRANCH) and fetch
-   TARGET_BRANCH as ``origin/<target>`` so the MR diff can be produced;
-3. clone each EXTRA_PROJECTS entry read-only into ``/work/lib/<path>``;
+ 2. clone the target repo into ``/work/target`` with a git credential helper
+    (the token never appears in any argv), check out the MR head via GitLab's
+    ``refs/merge-requests/<iid>/head`` ref (which works for fork MRs and
+    deleted branches too, falling back to SOURCE_BRANCH) and fetch
+    TARGET_BRANCH as ``origin/<target>`` so the MR diff can be produced;
+ 3. provide each EXTRA_PROJECTS entry read-only at ``/work/lib/<path>``:
+    when the app already bind-mounts a persistent host-side checkout there
+    (the current app), use it as-is; otherwise clone the repo (standalone
+    / older-app fallback);
 4. render ``/work/opencode.json`` from ``opencode.json.j2``
    (``string.Template``, stdlib only) so the rendered config is equivalent
    to ``app/orchestrator/opencode_template.render_opencode_json``;
@@ -206,6 +209,13 @@ def _make_read_only(root: Path) -> None:
 
 
 def _clone_extra_projects() -> None:
+    """Provide each EXTRA_PROJECTS entry read-only at /work/lib/<path>.
+
+    The current app bind-mounts a persistent host-side checkout at that path
+    before the container starts; when the destination already exists it is
+    used as-is (it is already read-only). Otherwise the repo is cloned
+    (standalone use, or an older app that does not mount checkouts).
+    """
     raw = os.environ.get("EXTRA_PROJECTS", "").strip()
     if not raw:
         return
@@ -230,7 +240,8 @@ def _clone_extra_projects() -> None:
             continue
         dest = WORK_DIR / "lib" / path
         if dest.exists():
-            shutil.rmtree(dest)
+            log(f"using bind-mounted library checkout -> {dest}")
+            continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         log(f"cloning extra library repo {url} (read-only) -> {dest}")
         args = ["clone"]

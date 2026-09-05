@@ -44,8 +44,15 @@ services:
       # created by the HOST's podman via this socket and join network
       # PODMAN_NETWORK (default: mrreview).
       - ${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}:/run/user/1000/podman/podman.sock
+      # Persistent checkouts of the library repos (LIBRARY_CHECKOUT_DIR).
+      # Mounted at the SAME path inside the app container: review containers
+      # are created by the host's podman, whose bind sources must be host
+      # paths, and the app passes LIBRARY_CHECKOUT_DIR straight through.
+      - ${LIBRARY_CHECKOUT_DIR:-${HOME}/.local/share/mr-review/libraries}:${LIBRARY_CHECKOUT_DIR:-${HOME}/.local/share/mr-review/libraries}
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mrreview:mrreview@postgres:5432/mrreview}
+      LIBRARY_CHECKOUT_DIR: ${LIBRARY_CHECKOUT_DIR:-${HOME}/.local/share/mr-review/libraries}
+      LIBRARY_PULL_MAX_AGE_HOURS: ${LIBRARY_PULL_MAX_AGE_HOURS:-24}
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
       APP_PASSWORD_HASH: ${APP_PASSWORD_HASH:?set APP_PASSWORD_HASH in .env}
       SECRET_ENC_KEY: ${SECRET_ENC_KEY:?set SECRET_ENC_KEY in .env}

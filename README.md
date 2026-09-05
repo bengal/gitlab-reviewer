@@ -21,8 +21,7 @@ Browser --HTTPS--> Web app container (FastAPI + Jinja/HTMX + APScheduler)
                       v                              v
                    PostgreSQL                Review-runner container (ephemeral)
                                                - git clone target @ MR branch + base
-                                               - git clone extra library repos
-                                               - render opencode.json (provider block)
+                                               - library checkouts mounted read-only
                                                - opencode run -m provider/model "<prompt>"
                                                - emit structured JSON + logs
                                                     |  /v1 (local models)
@@ -42,8 +41,12 @@ Browser --HTTPS--> Web app container (FastAPI + Jinja/HTMX + APScheduler)
   `ORCHESTRATOR=fake` swaps in a deterministic in-process backend for
   dev/tests.
 - **Review-runner** (`containers/review-runner/`) — stdlib-only entrypoint:
-  clones the target MR branch + base and any extra library repos (read-only,
-  token via git credential helper), renders `opencode.json` (provider block;
+  clones the target MR branch + base (token via git credential helper); the
+  extra library repos arrive read-only at `/work/lib/<path>` — the app keeps
+  a persistent checkout per library on the host (`LIBRARY_CHECKOUT_DIR`,
+  re-pulled at most every `LIBRARY_PULL_MAX_AGE_HOURS`) and bind-mounts them
+  (the entrypoint clones as a fallback when a checkout is not mounted);
+  then it renders `opencode.json` (provider block;
   `permission.bash/edit/webfetch = allow`), runs
   `opencode run -m <provider>/<model> "<prompt>"` under a hard timeout,
   extracts the final fenced JSON block to `result.json` (falls back to raw
@@ -193,6 +196,8 @@ override it.
 | `REVIEW_TIMEOUT_SECONDS` | `1800` | Hard per-review timeout (30 min). Exceeded runs are marked `timeout`. |
 | `PODMAN_NETWORK` | `host` | Network the review containers join: `host` for dev (reaches GitLab + llama-server directly), `mrreview` in the compose deployment (reaches `llama-server` via the internal network). |
 | `DISABLE_SCHEDULER` | `0` | `1` = no background queue pump / nightly cron (tests, or when you want to pump manually). |
+| `LIBRARY_CHECKOUT_DIR` | `~/.local/share/mr-review/libraries` | Host directory with the persistent checkouts of the extra (library) repos: one checkout per library, bind-mounted read-only into review containers at `/work/lib/<path>` instead of cloning per review. Must be a **host path** — the compose/quadlet deployments mount it into the app container at the same path. |
+| `LIBRARY_PULL_MAX_AGE_HOURS` | `24` | A library checkout older than this is re-pulled (`git pull`/`fetch`) before the next review uses it; `0` = pull before every review. A failed re-pull reuses the stale checkout (the initial clone must still succeed). |
 
 ### Deployment-only (consumed by compose/quadlet, not the app)
 
@@ -225,7 +230,9 @@ Three services on one shared bridge network (`mrreview`), **no host ports
 published**:
 
 - `app` — built from `deploy/Containerfile` (context = repo root), mounts the
-  podman socket from `${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}`,
+  podman socket from `${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}` and
+  the library checkouts dir `${LIBRARY_CHECKOUT_DIR:-~/.local/share/mr-review/libraries}`
+  (at the same path inside the container, see the configuration table),
   `LLAMA_BASE_URL` rewritten to `http://llama-server:8080`; the start script
   runs `alembic upgrade head` before serving.
 - `llama-server` — placeholder image, model mounted read-only from a host
@@ -280,17 +287,19 @@ pass), verify:
   allowlist** (`REVIEW_IMAGE` / `REVIEW_IMAGE_ALLOWLIST` — any other image is
   refused), and runs are `--rm` with `--memory=2g --cpus=2 --pids-limit=256`
   `--security-opt no-new-privileges` — **never `--privileged`**.
-- **Secrets at rest** — the GitLab token and model API keys are
-  Fernet-encrypted in the DB (`SECRET_ENC_KEY`); they are passed to review
-  containers via env only; the GitLab token reaches git through a per-repo
-  credential helper, never the command line.
+ - **Secrets at rest** — the GitLab token and model API keys are
+   Fernet-encrypted in the DB (`SECRET_ENC_KEY`); they are passed to review
+   containers via env only; the GitLab token reaches git (in the review
+   container, and in the app when it clones/re-pulls the library checkouts)
+   through a credential helper, never the command line.
 - **Log scrubbing** — review logs are scrubbed before storage: every secret
   value is replaced with `***` (`app/orchestrator/run_review.py:scrub_secrets`).
-- **Untrusted MR code** — the reviewer runs *untrusted code* with
-  `bash`/`edit` allowed inside an ephemeral, resource-capped container.
-  Treat diffs as data, not instructions (prompt-injection aware); extra
-  repos are cloned read-only; consider an egress allowlist for hardened
-  setups.
+ - **Untrusted MR code** — the reviewer runs *untrusted code* with
+   `bash`/`edit` allowed inside an ephemeral, resource-capped container.
+   Treat diffs as data, not instructions (prompt-injection aware); extra
+   library repos are bind-mounted read-only from persistent host checkouts
+   (never writable by the container); consider an egress allowlist for
+   hardened setups.
 - **Network exposure** — postgres and llama-server are reachable only on the
   shared internal network; the deployment files publish no host ports.
 

@@ -30,6 +30,17 @@ class Settings(BaseSettings):
     podman_network: str = "host"
     # Hard per-review timeout in seconds (30 minutes).
     review_timeout_seconds: int = 1800
+    # Host directory holding the persistent checkouts of the extra (library)
+    # repos: the app keeps one checkout per library here and bind-mounts
+    # them read-only into the review containers instead of cloning per run.
+    # Empty = ~/.local/share/mr-review/libraries. In the compose/quadlet
+    # deployments this path is mounted into the app container at the SAME
+    # path it has on the host (review containers are created by the host's
+    # podman, so the bind source must be a host path).
+    library_checkout_dir: str = ""
+    # A library checkout older than this many hours is re-pulled before the
+    # next review uses it (0 = pull before every review).
+    library_pull_max_age_hours: float = 24.0
     orchestrator: Literal["podman", "fake"] = "podman"
     # Set to disable the background scheduler entirely (tests/dev): no queue
     # pump, no nightly cron. Pumps can still be driven manually (worker.pump_once).

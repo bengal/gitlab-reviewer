@@ -21,6 +21,12 @@ Network=mrreview
 # Host rootless podman socket. Adjust the UID to your user; the app process
 # runs as uid 1000 inside the container and must match the socket owner.
 Volume=/run/user/1000/podman/podman.sock:/run/user/1000/podman/podman.sock
+# Persistent checkouts of the library repos: kept on the host, mounted at
+# the same path inside the app container (the app passes the path through
+# as the read-only bind source of the review containers), and re-pulled by
+# the app at most once per LIBRARY_PULL_MAX_AGE_HOURS.
+Environment=LIBRARY_CHECKOUT_DIR=%h/.local/share/mr-review/libraries
+Volume=%h/.local/share/mr-review/libraries
 # Required; holds the secrets (copy mrreview.env.example to mrreview.env).
 EnvironmentFile=%d/mrreview.env
 Environment=LLAMA_BASE_URL=http://mrreview-llama:8080
