@@ -1,7 +1,9 @@
-"""Settings routes: GitLab connection, review defaults, scheduling knobs.
+"""Settings routes: GitLab connection, review defaults, scheduling knobs,
+model profiles.
 
-The GitLab token is masked on read (the form only shows that a token is set)
-and is only overwritten when the user submits a non-empty value.
+The GitLab token and model API keys are masked on read (the forms only show
+that a value is set) and are only overwritten when the user submits a
+non-empty value.
 """
 
 import json
@@ -11,11 +13,14 @@ import requests
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_settings_row
 from app.deps import get_db
-from app.models import SettingsRow
+from app.models import ModelProfile, ScheduledJob, SettingsRow
+from app.schemas.model_profile import ModelProfileForm
 from app.schemas.settings import SettingsForm
 from app.security import decrypt_secret, encrypt_secret
 from app.services.gitlab_client import GitLabClient, GitLabError
@@ -36,12 +41,43 @@ def _templates(request: Request):
     return request.app.state.templates
 
 
+def _list_profiles(db: Session) -> list[ModelProfile]:
+    return list(
+        db.scalars(
+            select(ModelProfile).order_by(ModelProfile.is_default.desc(), ModelProfile.name)
+        )
+    )
+
+
+def _profile_display(profile: ModelProfile) -> dict[str, object]:
+    """One profile row for the UI. The API key is masked: only its presence
+    (or the env-var name) is ever shown, never the decrypted value."""
+    if profile.api_key_env:
+        key_display = f"from env {profile.api_key_env}"
+    elif profile.api_key:
+        key_display = "••• (set)"
+    else:
+        key_display = "—"
+    return {
+        "id": profile.id,
+        "name": profile.name,
+        "provider": profile.provider,
+        "model_id": profile.model_id,
+        "base_url": profile.base_url,
+        "key_display": key_display,
+        "is_default": profile.is_default,
+    }
+
+
 def _render(
     request: Request,
+    db: Session,
     row: SettingsRow,
     raw: dict[str, object],
     errors: list[str] | None,
     message: str | None,
+    profile_raw: dict[str, object] | None = None,
+    profile_errors: list[str] | None = None,
 ) -> HTMLResponse:
     """Render the settings form; ``raw`` (raw form strings) wins over the row."""
     has_raw = bool(raw)
@@ -67,13 +103,16 @@ def _render(
         "post_results_to_gitlab": raw.get("post_results_to_gitlab", row.post_results_to_gitlab),
         "errors": errors,
         "message": message,
+        "profiles": [_profile_display(p) for p in _list_profiles(db)],
+        "profile_raw": profile_raw,
+        "profile_errors": profile_errors,
     }
     return _templates(request).TemplateResponse(request, "settings/settings.html", context)
 
 
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    return _render(request, get_settings_row(db), {}, None, None)
+    return _render(request, db, get_settings_row(db), {}, None, None)
 
 
 @router.post("/settings", response_class=HTMLResponse)
@@ -123,7 +162,7 @@ def settings_save(
         except ValidationError as exc:
             errors = [f"{('.'.join(str(part) for part in err['loc']))}: {err['msg']}" for err in exc.errors()]
     if errors is not None:
-        return _render(request, row, raw, errors, None)
+        return _render(request, db, row, raw, errors, None)
 
     row.gitlab_url = form.gitlab_url.strip()
     row.gitlab_project = form.gitlab_project.strip()
@@ -136,7 +175,7 @@ def settings_save(
     row.poll_interval_seconds = form.poll_interval_seconds
     row.post_results_to_gitlab = form.post_results_to_gitlab
     db.commit()
-    return _render(request, row, {}, None, "Settings saved.")
+    return _render(request, db, row, {}, None, "Settings saved.")
 
 
 @router.post("/settings/test-connection")
@@ -168,3 +207,116 @@ def settings_test_connection(
         "settings/partials/test_result.html",
         {"ok": ok, "message": message},
     )
+
+
+def _render_profiles(
+    request: Request,
+    db: Session,
+    delete_error: str | None = None,
+    profile_raw: dict[str, object] | None = None,
+    profile_errors: list[str] | None = None,
+) -> HTMLResponse:
+    """Render just the model-profiles section (HTMX swap target)."""
+    return _templates(request).TemplateResponse(
+        request,
+        "settings/partials/model_profiles.html",
+        {
+            "profiles": [_profile_display(p) for p in _list_profiles(db)],
+            "delete_error": delete_error,
+            "profile_raw": profile_raw,
+            "profile_errors": profile_errors,
+        },
+    )
+
+
+@router.post("/settings/models", response_class=HTMLResponse)
+def settings_model_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    name: str = Form(""),
+    provider: str = Form("anthropic"),
+    model_id: str = Form(""),
+    base_url: str = Form(""),
+    api_key: str = Form(""),
+    api_key_env: str = Form(""),
+    is_default: bool = Form(False),
+    extra_opencode_json: str = Form("{}"),
+) -> HTMLResponse:
+    row = get_settings_row(db)
+    raw = {
+        "name": name,
+        "provider": provider,
+        "model_id": model_id,
+        "base_url": base_url,
+        "api_key_env": api_key_env,
+        "is_default": is_default,
+        "extra_opencode_json": extra_opencode_json,
+    }
+    errors: list[str] | None = None
+    try:
+        form = ModelProfileForm(
+            name=name,
+            provider=provider,
+            model_id=model_id,
+            base_url=base_url,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            is_default=is_default,
+            extra_opencode_json=extra_opencode_json,
+        )
+    except ValidationError as exc:
+        errors = [f"{('.'.join(str(part) for part in err['loc']))}: {err['msg']}" for err in exc.errors()]
+    if errors is not None:
+        return _render(request, db, row, {}, None, None, profile_raw=raw, profile_errors=errors)
+    if is_default:
+        for other in db.scalars(select(ModelProfile).where(ModelProfile.is_default.is_(True))):
+            other.is_default = False
+    db.add(
+        ModelProfile(
+            name=form.name,
+            provider=form.provider,
+            model_id=form.model_id,
+            base_url=form.base_url or None,
+            api_key=encrypt_secret(form.api_key) if form.api_key.strip() else None,
+            api_key_env=form.api_key_env.strip() or None,
+            is_default=form.is_default,
+            extra_opencode_json=form.extra_opencode_json,
+        )
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raw_no_key = dict(raw, api_key="")
+        return _render(
+            request,
+            db,
+            row,
+            {},
+            None,
+            None,
+            profile_raw=raw_no_key,
+            profile_errors=[f"name: a profile named {form.name!r} already exists"],
+        )
+    return _render(request, db, row, {}, None, f"Model profile {form.name!r} added.")
+
+
+@router.post("/settings/models/{profile_id}/delete", response_class=HTMLResponse)
+def settings_model_delete(request: Request, profile_id: int, db: Session = Depends(get_db)) -> HTMLResponse:
+    """Delete a profile (HTMX swap target is the profiles section)."""
+    profile = db.get(ModelProfile, profile_id)
+    if profile is None:
+        return _render_profiles(request, db, delete_error=f"No profile with id {profile_id}.")
+    in_use = db.scalar(
+        select(func.count(ScheduledJob.id)).where(ScheduledJob.model_profile_id == profile.id)
+    )
+    if in_use:
+        return _render_profiles(
+            request,
+            db,
+            delete_error=f"Profile {profile.name!r} is used by {in_use} job(s) and can't "
+            "be deleted while jobs reference it (job rows are kept as history).",
+        )
+    db.delete(profile)
+    db.commit()
+    return _render_profiles(request, db)

@@ -1,0 +1,20 @@
+{# Jobs in flight (claimed/running). Read-only here; the pump that fills this
+   section lands in milestone 6. #}
+<section class="card" id="running-section">
+  <h2>Running <span class="hint">({{ running|length }})</span></h2>
+  {% if running %}
+  <ul class="queue-list">
+    {% for job, mr, profile in running %}
+    <li class="queue-row">
+      <span class="queue-status">{{ job.status }}</span>
+      <span class="queue-mr">
+        <a href="/mrs/{{ mr.iid }}">!{{ mr.iid }}</a> {{ mr.title }}
+      </span>
+      <span class="queue-model">{{ profile.name }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="hint">Nothing running right now.</p>
+  {% endif %}
+</section>

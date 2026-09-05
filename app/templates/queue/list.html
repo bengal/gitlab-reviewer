@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Queue — GitLab MR Review{% endblock %}
+
+{% block content %}
+<h1>Review queue</h1>
+{% if message %}
+<p class="hint">{{ message }}</p>
+{% endif %}
+<div id="queue-page">
+  {% include "queue/partials/sections.html" %}
+</div>
+<script>
+  // Drag-reorder via SortableJS; the order is persisted with an HTMX POST.
+  // Without JS the Top/Bottom/Cancel buttons below do the same work.
+  (function () {
+    function initSortable(list) {
+      if (!list || !window.Sortable || list.dataset.sortableBound) return;
+      list.dataset.sortableBound = "1";
+      Sortable.create(list, {
+        handle: ".drag-handle",
+        animation: 150,
+        onEnd: function () {
+          var ids = [];
+          for (var i = 0; i < list.children.length; i++) {
+            ids.push(list.children[i].getAttribute("data-job-id"));
+          }
+          htmx.ajax("POST", "/queue/reorder", {
+            values: {ids: ids},
+            target: "#queue-section",
+            swap: "outerHTML"
+          });
+        }
+      });
+    }
+    initSortable(document.getElementById("queue-sortable"));
+    // Re-bind after HTMX swaps in a fresh queue section (outerHTML swap).
+    document.body.addEventListener("htmx:afterSwap", function (event) {
+      var section = event.target;
+      if (section && section.id === "queue-section") {
+        initSortable(section.querySelector("#queue-sortable"));
+      }
+    });
+  })();
+</script>
+{% endblock %}

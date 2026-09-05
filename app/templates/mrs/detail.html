@@ -29,8 +29,9 @@
 </dl>
 <section class="card">
   <h2>Schedule review</h2>
-  {# Partial hook: milestone 4 drops mrs/partials/schedule_form.html in place. #}
-  {% include "mrs/partials/schedule_form.html" ignore missing %}
-  <p class="hint" id="schedule-placeholder">Review scheduling arrives in milestone 4.</p>
+  {% if schedule_message %}
+  <p class="hint">{{ schedule_message }}</p>
+  {% endif %}
+  {% include "mrs/partials/schedule_form.html" %}
 </section>
 {% endblock %}

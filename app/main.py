@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db import get_settings_row, init_db
 from app.deps import SESSION_COOKIE, decode_session, get_db, is_exempt_path, require_auth
-from app.routers import auth, mrs
+from app.routers import auth, mrs, queue
 from app.routers import settings as settings_router
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -66,6 +66,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(mrs.router)
+    app.include_router(queue.router)
     app.include_router(settings_router.router)
 
     return app

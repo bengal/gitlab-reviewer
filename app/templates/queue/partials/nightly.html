@@ -1,0 +1,25 @@
+{# Enrolled nightly set (held out of the live queue until the nightly cron
+   promotes it, milestone 6). Remove re-queues the job immediately. #}
+<section class="card" id="nightly-section">
+  <h2>Scheduled nightly <span class="hint">({{ nightly|length }})</span></h2>
+  {% if nightly %}
+  <ul class="queue-list">
+    {% for job, mr, profile in nightly %}
+    <li class="queue-row">
+      <span class="queue-pos">{{ job.position }}.</span>
+      <span class="queue-mr">
+        <a href="/mrs/{{ mr.iid }}">!{{ mr.iid }}</a> {{ mr.title }}
+      </span>
+      <span class="queue-model">{{ profile.name }}</span>
+      <span class="queue-actions">
+        <button type="button" class="btn small danger" hx-post="/queue/nightly/{{ job.id }}/remove"
+                hx-target="#queue-page" hx-swap="outerHTML"
+                hx-confirm="Remove from the nightly set (the review is re-queued now)?">Remove</button>
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="hint">No nightly reviews enrolled.</p>
+  {% endif %}
+</section>

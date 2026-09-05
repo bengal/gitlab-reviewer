@@ -1,0 +1,36 @@
+{# Queue section: queued immediate jobs ordered by position. The root element
+   id="queue-section" is the HTMX swap target for reorder/cancel/top/bottom,
+   so a re-render always reflects the full current order. Rows carry
+   data-job-id for Sortable; the buttons keep the UI usable without JS. #}
+<section class="card" id="queue-section">
+  <h2>Queue <span class="hint">({{ queued|length }})</span></h2>
+  {% if section_message %}
+  <p class="hint">{{ section_message }}</p>
+  {% endif %}
+  {% if queued %}
+  <ul id="queue-sortable" class="queue-list">
+    {% for job, mr, profile in queued %}
+    <li class="queue-row" data-job-id="{{ job.id }}">
+      <span class="drag-handle" title="Drag to reorder">&#8801;</span>
+      <span class="queue-pos">{{ job.position }}.</span>
+      <span class="queue-mr">
+        <a href="/mrs/{{ mr.iid }}">!{{ mr.iid }}</a> {{ mr.title }}
+      </span>
+      <span class="queue-model">{{ profile.name }}</span>
+      <span class="queue-actions">
+        <button type="button" class="btn small" hx-post="/queue/{{ job.id }}/top"
+                hx-target="#queue-section" hx-swap="outerHTML">Top</button>
+        <button type="button" class="btn small" hx-post="/queue/{{ job.id }}/bottom"
+                hx-target="#queue-section" hx-swap="outerHTML">Bottom</button>
+        <button type="button" class="btn small danger" hx-post="/queue/{{ job.id }}/cancel"
+                hx-target="#queue-section" hx-swap="outerHTML"
+                hx-confirm="Cancel this scheduled review?">Cancel</button>
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="hint">Nothing queued — schedule a review from an MR's
+  <a href="/mrs">detail page</a>.</p>
+  {% endif %}
+</section>

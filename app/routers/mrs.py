@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_settings_row
 from app.deps import get_db
-from app.models import MergeRequest
+from app.models import MergeRequest, ModelProfile
 from app.services.mr_sync import sync_open_mrs
 
 router = APIRouter()
@@ -70,6 +70,24 @@ def mr_sync(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     )
 
 
+def detail_context(db: Session, mr: MergeRequest, message: str | None = None) -> dict:
+    """Context for mrs/detail.html: the snapshot plus the schedule-form inputs
+    (profiles, known-library suggestions, defaults). Shared by the detail
+    route and the schedule POST in app.routers.queue."""
+    row = get_settings_row(db)
+    profiles = list(
+        db.scalars(select(ModelProfile).order_by(ModelProfile.is_default.desc(), ModelProfile.name))
+    )
+    return {
+        "mr": mr,
+        "profiles": profiles,
+        "known_libraries": row.known_libraries or [],
+        "nightly_time": row.nightly_time,
+        "default_post_to_gitlab": row.post_results_to_gitlab,
+        "schedule_message": message,
+    }
+
+
 @router.get("/mrs/{iid}", response_class=HTMLResponse)
 def mr_detail(request: Request, iid: int, db: Session = Depends(get_db)) -> HTMLResponse:
     row = get_settings_row(db)
@@ -83,4 +101,4 @@ def mr_detail(request: Request, iid: int, db: Session = Depends(get_db)) -> HTML
         return _templates(request).TemplateResponse(
             request, "mrs/not_found.html", {"iid": iid}, status_code=404
         )
-    return _templates(request).TemplateResponse(request, "mrs/detail.html", {"mr": mr})
+    return _templates(request).TemplateResponse(request, "mrs/detail.html", detail_context(db, mr))

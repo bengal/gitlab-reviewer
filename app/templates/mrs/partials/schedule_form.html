@@ -1,0 +1,55 @@
+{# Schedule-review form (mrs/detail.html partial hook). A plain HTML form;
+   extra-project rows are added/removed via HTMX and pre-filled from
+   settings.known_libraries. #}
+{% if schedule_error %}
+<p class="error">{{ schedule_error }}</p>
+{% endif %}
+<form method="post" action="/mrs/{{ mr.iid }}/schedule" class="schedule-form">
+  <label for="schedule_profile">Model profile</label>
+  <select id="schedule_profile" name="model_profile_id" required>
+    {% for profile in profiles %}
+    <option value="{{ profile.id }}" {% if profile.is_default %}selected{% endif %}>
+      {{ profile.name }} ({{ profile.provider }}:{{ profile.model_id }})
+    </option>
+    {% endfor %}
+  </select>
+  {% if not profiles %}
+  <p class="hint">No model profiles yet — add one in <a href="/settings">Settings</a>.</p>
+  {% endif %}
+
+  <label class="check">
+    <input type="radio" name="schedule_type" value="immediate" checked>
+    Review now
+  </label>
+  <label class="check">
+    <input type="radio" name="schedule_type" value="nightly">
+    Review nightly (runs after {{ nightly_time }})
+  </label>
+
+  <label for="schedule_prompt">Prompt override (optional)</label>
+  <textarea id="schedule_prompt" name="prompt_override" rows="5"
+            placeholder="Leave empty to use the default review prompt"></textarea>
+
+  <label>Extra library projects
+    <span class="hint">(cloned read-only for cross-repo context)</span>
+  </label>
+  <ul id="extra-projects" class="extra-projects">
+    {% for lib in known_libraries %}
+    {% set index = loop.index0 %}
+    {% set url = lib.get("url", "") %}
+    {% set ref = lib.get("ref") %}
+    {% set path = lib.get("path") %}
+    {% include "mrs/partials/schedule_extra_row.html" %}
+    {% endfor %}
+  </ul>
+  <button type="button" class="btn small" hx-post="/mrs/{{ mr.iid }}/schedule-extra-row"
+          hx-target="#extra-projects" hx-swap="beforeend">Add project</button>
+
+  <label class="check">
+    <input type="checkbox" name="post_to_gitlab" value="true"
+           {{ 'checked' if default_post_to_gitlab else '' }}>
+    Post the result back to the MR as a GitLab note
+  </label>
+
+  <button type="submit" class="btn" {{ 'disabled' if not profiles else '' }}>Schedule review</button>
+</form>

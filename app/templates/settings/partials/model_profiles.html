@@ -1,0 +1,88 @@
+{# Model profiles: list of saved profiles + create form. Rendered by the
+   settings page and as the HTMX swap target of POST /settings/models/{id}/
+   delete (root element id="model-profiles"). API keys are masked: only their
+   presence (or the env-var name) is shown, never the decrypted value. #}
+<section class="card" id="model-profiles">
+  <h2>Model profiles</h2>
+  {% if delete_error %}
+  <p class="error">{{ delete_error }}</p>
+  {% endif %}
+  {% if profile_errors %}
+  <div class="error">
+    {% for err in profile_errors %}
+    <p>{{ err }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if profiles %}
+  <table class="mr-table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Provider</th>
+        <th>Model</th>
+        <th>Base URL</th>
+        <th>API key</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in profiles %}
+      <tr>
+        <td>{{ p.name }}{% if p.is_default %} <span class="hint">(default)</span>{% endif %}</td>
+        <td>{{ p.provider }}</td>
+        <td><code>{{ p.model_id }}</code></td>
+        <td>{{ p.base_url or "—" }}</td>
+        <td>{{ p.key_display }}</td>
+        <td>
+          <button type="button" class="btn small danger" hx-post="/settings/models/{{ p.id }}/delete"
+                  hx-target="#model-profiles" hx-swap="outerHTML"
+                  hx-confirm="Delete profile {{ p.name }}?">Delete</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">No model profiles yet — add one below to schedule reviews.</p>
+  {% endif %}
+
+  <form method="post" action="/settings/models" class="profile-form">
+    <div class="profile-grid">
+      <label for="profile_name">Name</label>
+      <input type="text" id="profile_name" name="name"
+             value="{{ profile_raw.get('name', '') if profile_raw else '' }}" placeholder="claude">
+      <label for="profile_provider">Provider</label>
+      <select id="profile_provider" name="provider">
+        <option value="anthropic" {{ 'selected' if profile_raw and profile_raw.get('provider') == 'anthropic' else '' }}>anthropic</option>
+        <option value="local" {{ 'selected' if profile_raw and profile_raw.get('provider') == 'local' else '' }}>local (OpenAI-compatible /v1)</option>
+      </select>
+      <label for="profile_model_id">Model ID</label>
+      <input type="text" id="profile_model_id" name="model_id"
+             value="{{ profile_raw.get('model_id', '') if profile_raw else '' }}"
+             placeholder="claude-sonnet-4-20250514">
+      <label for="profile_base_url">Base URL (local only)</label>
+      <input type="text" id="profile_base_url" name="base_url"
+             value="{{ profile_raw.get('base_url', '') if profile_raw else '' }}"
+             placeholder="http://llama-server:8080/v1">
+      <label for="profile_api_key">API key</label>
+      <input type="password" id="profile_api_key" name="api_key" autocomplete="new-password"
+             value="" placeholder="encrypted at rest; leave empty for none">
+      <label for="profile_api_key_env">API key env var (optional)</label>
+      <input type="text" id="profile_api_key_env" name="api_key_env"
+             value="{{ profile_raw.get('api_key_env', '') if profile_raw else '' }}"
+             placeholder="ANTHROPIC_API_KEY">
+    </div>
+    <label class="check">
+      <input type="checkbox" name="is_default" value="true"
+             {{ 'checked' if profile_raw and profile_raw.get('is_default') else '' }}>
+      Use as the default profile
+    </label>
+    <label for="profile_extra_json">Extra opencode.json
+      <span class="hint">(JSON object merged into the rendered config)</span>
+    </label>
+    <textarea id="profile_extra_json" name="extra_opencode_json" rows="3"
+              spellcheck="false">{{ profile_raw.get('extra_opencode_json', '{}') if profile_raw else '{}' }}</textarea>
+    <button type="submit" class="btn">Add profile</button>
+  </form>
+</section>

@@ -1,0 +1,14 @@
+{# One extra-project row. Pre-filled per known_libraries entry (mrs/partials/
+   schedule_form.html) and appended empty by POST /mrs/{iid}/schedule-extra-row.
+   `index` namespaces the three inputs; url/ref/path are optional pre-fills —
+   rows with an empty URL are ignored on submit. #}
+<li class="extra-row">
+  <input type="text" name="extra_url_{{ index }}" value="{{ url or '' }}"
+         placeholder="repository URL">
+  <input type="text" name="extra_ref_{{ index }}" value="{{ ref or '' }}"
+         placeholder="ref (optional)">
+  <input type="text" name="extra_path_{{ index }}" value="{{ path or '' }}"
+         placeholder="path (optional)">
+  <button type="button" class="row-remove" title="Remove this row"
+          onclick="this.closest('.extra-row').remove()">&times;</button>
+</li>

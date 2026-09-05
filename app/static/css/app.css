@@ -197,3 +197,120 @@ label.check {
 label.check input[type="checkbox"] {
   width: auto;
 }
+
+/* -- Queue ---------------------------------------------------------------- */
+
+.queue-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+}
+
+.queue-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #d0d7de;
+}
+
+.queue-row:last-child {
+  border-bottom: none;
+}
+
+.queue-row.sortable-ghost {
+  opacity: 0.4;
+  background: #ddf4ff;
+}
+
+.drag-handle {
+  cursor: grab;
+  color: #57606a;
+  user-select: none;
+}
+
+.queue-pos {
+  min-width: 1.5rem;
+  color: #57606a;
+  text-align: right;
+}
+
+.queue-status {
+  min-width: 4.5rem;
+  font-size: 0.8rem;
+  color: #57606a;
+}
+
+.queue-mr {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-model {
+  font-size: 0.85rem;
+  color: #57606a;
+}
+
+.queue-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.btn.small {
+  margin-top: 0;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.btn.danger {
+  background: #cf222e;
+  border-color: #cf222e;
+}
+
+/* -- Schedule form: extra library project rows ---------------------------- */
+
+.extra-projects {
+  list-style: none;
+  margin: 0.25rem 0;
+  padding: 0;
+}
+
+.extra-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr auto;
+  gap: 0.4rem;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+
+.extra-row input {
+  width: 100%;
+}
+
+.row-remove {
+  padding: 0.2rem 0.6rem;
+  margin-top: 0;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #fff;
+  color: #cf222e;
+  cursor: pointer;
+}
+
+/* -- Settings: model profiles --------------------------------------------- */
+
+.profile-form {
+  margin-top: 1rem;
+}
+
+.profile-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 1rem;
+}
