@@ -1,13 +1,14 @@
 """Merge request list and detail routes (with HTMX sync)."""
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_settings_row
 from app.deps import get_db
-from app.models import JobStatus, MergeRequest, ModelProfile, ReviewRun, ScheduledJob
+from app.models import JobStatus, MergeRequest, ModelProfile, ReviewRun, ScheduledJob, ScheduleType
+from app.services import scheduling
 from app.services.mr_sync import sync_open_mrs
 
 router = APIRouter()
@@ -99,6 +100,86 @@ def mr_sync(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         message, failed = f"Sync failed: {error}", True
     else:
         message, failed = f"Synced: {added} added, {updated} updated, {unchanged} unchanged.", False
+    mrs = _list_mrs(db, row)
+    return _templates(request).TemplateResponse(
+        request,
+        "mrs/partials/list.html",
+        {
+            "configured": True,
+            "mrs": mrs,
+            "review_counts": _review_counts(db, mrs),
+            "default_branch": row.gitlab_default_branch,
+            "sync_message": message,
+            "sync_error": failed,
+        },
+    )
+
+
+@router.post("/mrs/schedule-selected", response_class=HTMLResponse)
+def schedule_selected_mrs(
+    request: Request,
+    db: Session = Depends(get_db),
+    mr_iids: list[str] = Form(default=[]),
+    schedule_type: str = Form("immediate"),
+) -> HTMLResponse:
+    """Batch-schedule reviews for the selected open MRs using the default
+    model profile and the known library projects from settings. Re-renders
+    the list partial (HTMX swap target); also works as a plain form POST."""
+    row = get_settings_row(db)
+    if not _configured(row):
+        return _templates(request).TemplateResponse(
+            request,
+            "mrs/partials/list.html",
+            {
+                "configured": False,
+                "mrs": [],
+                "review_counts": {},
+                "sync_message": None,
+                "sync_error": False,
+            },
+        )
+    message, failed = None, False
+    profile = db.scalar(
+        select(ModelProfile).order_by(ModelProfile.is_default.desc(), ModelProfile.name).limit(1)
+    )
+    if profile is None:
+        message, failed = "No model profiles yet — add one in Settings.", True
+    elif schedule_type not in (ScheduleType.immediate.value, ScheduleType.nightly.value):
+        message, failed = f"Unknown schedule type {schedule_type!r}.", True
+    else:
+        try:
+            iids = list(dict.fromkeys(int(value) for value in mr_iids))
+        except ValueError:
+            iids = []
+        if not iids:
+            message, failed = "Select at least one merge request.", True
+        else:
+            selected = list(
+                db.scalars(
+                    select(MergeRequest).where(
+                        MergeRequest.project == row.gitlab_project,
+                        MergeRequest.iid.in_(iids),
+                        MergeRequest.state == "opened",
+                    )
+                )
+            )
+            if not selected:
+                message, failed = "None of the selected merge requests are open.", True
+            else:
+                for mr in selected:
+                    scheduling.enqueue(
+                        db,
+                        mr=mr,
+                        profile=profile,
+                        schedule_type=schedule_type,
+                        extra_projects=list(row.known_libraries or []),
+                    )
+                when = (
+                    "immediately"
+                    if schedule_type == ScheduleType.immediate.value
+                    else f"nightly (after {row.nightly_time})"
+                )
+                message = f"Scheduled {len(selected)} review(s) — {profile.name}, {when}."
     mrs = _list_mrs(db, row)
     return _templates(request).TemplateResponse(
         request,

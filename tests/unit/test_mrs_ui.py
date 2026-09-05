@@ -268,6 +268,123 @@ def test_mrs_list_shows_review_and_scheduled_counts(authed, db, monkeypatch):
     assert _row_cells(resp, 2)[-2:] == ["0", "1"]
 
 
+def test_mrs_list_checkbox_only_for_open_mrs(authed, db, monkeypatch):
+    configure_row(db)
+    install_fake_client(monkeypatch)
+    authed.post("/mrs/sync")
+    by_iid = {mr.iid: mr for mr in db.scalars(select(MergeRequest))}
+    by_iid[2].state = "merged"
+    db.commit()
+
+    resp = authed.get("/mrs")
+    assert resp.text.count('name="mr_iids"') == 1  # only the open MR is selectable
+    assert _row_cells(resp, 2)[-2:] == ["0", "0"]  # counts still shown for merged MRs
+
+
+def _schedule_setup(authed, db, monkeypatch, *, profile_name="claude", libraries=None):
+    """Configured row + synced MRs + a default profile; returns the profile."""
+    configure_row(db)
+    install_fake_client(monkeypatch)
+    authed.post("/mrs/sync")
+    if libraries is not None:
+        row = get_settings_row(db)
+        row.known_libraries = libraries
+        db.commit()
+    profile = ModelProfile(
+        name=profile_name, provider="anthropic", model_id="claude-sonnet-4", is_default=True
+    )
+    db.add(profile)
+    db.commit()
+    return profile
+
+
+def test_schedule_selected_enqueues_default_profile_and_libraries(authed, db, monkeypatch):
+    libraries = [
+        {"url": "https://gitlab.example.com/group/liba", "ref": "v1", "path": "liba"},
+        {"url": "https://gitlab.example.com/group/libb"},
+    ]
+    default = _schedule_setup(authed, db, monkeypatch, profile_name="mmm-default", libraries=libraries)
+    # a non-default profile that sorts first by name must not win
+    db.add(ModelProfile(name="aaa-local", provider="local", model_id="qwen3-32b"))
+    db.commit()
+
+    resp = authed.post("/mrs/schedule-selected", data={"mr_iids": ["1", "2"], "schedule_type": "immediate"})
+    assert resp.status_code == 200
+    assert "scheduled 2 review" in resp.text.lower()
+
+    jobs = sorted(db.scalars(select(ScheduledJob)), key=lambda j: j.merge_request_id)
+    assert len(jobs) == 2
+    assert {j.merge_request_id for j in jobs} == {
+        mr.id for mr in db.scalars(select(MergeRequest))
+    }
+    for job in jobs:
+        assert job.status == JobStatus.queued.value
+        assert job.schedule_type == ScheduleType.immediate.value
+        assert job.model_profile_id == default.id
+        assert job.extra_projects == libraries
+        assert job.post_to_gitlab is None  # falls back to the settings default
+    assert [j.position for j in jobs] == [1, 2]
+    # the re-rendered list already reflects the new queued counts
+    assert _row_cells(resp, 1)[-2:] == ["0", "1"]
+    assert _row_cells(resp, 2)[-2:] == ["0", "1"]
+
+
+def test_schedule_selected_nightly(authed, db, monkeypatch):
+    _schedule_setup(authed, db, monkeypatch)
+
+    resp = authed.post("/mrs/schedule-selected", data={"mr_iids": ["2"], "schedule_type": "nightly"})
+    assert resp.status_code == 200
+    assert "nightly" in resp.text.lower()
+
+    job = db.scalar(select(ScheduledJob))
+    assert job is not None
+    assert job.schedule_type == ScheduleType.nightly.value
+    assert job.status == JobStatus.queued.value
+    assert _row_cells(resp, 2)[-2:] == ["0", "1"]
+
+
+def test_schedule_selected_requires_selection(authed, db, monkeypatch):
+    _schedule_setup(authed, db, monkeypatch)
+
+    resp = authed.post("/mrs/schedule-selected", data={"schedule_type": "immediate"})
+    assert resp.status_code == 200
+    assert "select at least one" in resp.text.lower()
+    assert list(db.scalars(select(ScheduledJob))) == []
+
+
+def test_schedule_selected_requires_profile(authed, db, monkeypatch):
+    configure_row(db)
+    install_fake_client(monkeypatch)
+    authed.post("/mrs/sync")
+
+    resp = authed.post("/mrs/schedule-selected", data={"mr_iids": ["1"], "schedule_type": "immediate"})
+    assert resp.status_code == 200
+    assert "no model profiles" in resp.text.lower()
+    assert list(db.scalars(select(ScheduledJob))) == []
+
+
+def test_schedule_selected_skips_closed_mrs(authed, db, monkeypatch):
+    _schedule_setup(authed, db, monkeypatch)
+    by_iid = {mr.iid: mr for mr in db.scalars(select(MergeRequest))}
+    by_iid[2].state = "merged"
+    db.commit()
+
+    resp = authed.post("/mrs/schedule-selected", data={"mr_iids": ["1", "2"], "schedule_type": "immediate"})
+    assert resp.status_code == 200
+    assert "scheduled 1 review" in resp.text.lower()
+    jobs = list(db.scalars(select(ScheduledJob)))
+    assert len(jobs) == 1
+    assert jobs[0].merge_request_id == by_iid[1].id
+
+    # and when nothing selected is open
+    by_iid[1].state = "closed"
+    db.commit()
+    resp = authed.post("/mrs/schedule-selected", data={"mr_iids": ["1"], "schedule_type": "immediate"})
+    assert resp.status_code == 200
+    assert "none of the selected" in resp.text.lower()
+    assert list(db.scalars(select(ScheduledJob))) == [jobs[0]]  # no second job
+
+
 # -- /settings -----------------------------------------------------------------
 
 

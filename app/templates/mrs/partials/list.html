@@ -1,5 +1,6 @@
 {# List partial: full page include (mrs/list.html) and the HTMX swap target
-   for POST /mrs/sync — the root element keeps the id="mr-list" on re-render. #}
+   for POST /mrs/sync and POST /mrs/schedule-selected — the root element
+   keeps the id="mr-list" on re-render. #}
 {% if not configured %}
 <div id="mr-list">
   <p class="hint">GitLab is not configured yet — set the instance URL, project and
@@ -12,9 +13,11 @@
   <p class="{{ 'error' if sync_error else 'hint' }}">{{ sync_message }}</p>
   {% endif %}
   {% if mrs %}
+  <form method="post" action="/mrs/schedule-selected">
   <table class="mr-table">
     <thead>
       <tr>
+        <th class="nowrap" title="Select for batch scheduling"></th>
         <th class="nowrap">#</th>
         <th>Title</th>
         <th class="nowrap">Author</th>
@@ -29,6 +32,11 @@
       {% for mr in mrs %}
       {% set counts = review_counts.get(mr.id, (0, 0)) %}
       <tr>
+        <td class="nowrap">
+          {% if mr.state == "opened" %}
+          <input type="checkbox" name="mr_iids" value="{{ mr.iid }}">
+          {% endif %}
+        </td>
         <td class="nowrap"><a href="/mrs/{{ mr.iid }}">!{{ mr.iid }}</a></td>
         <td>
           <a href="/mrs/{{ mr.iid }}">{{ mr.title }}</a>
@@ -49,6 +57,19 @@
       {% endfor %}
     </tbody>
   </table>
+  <p>
+    <button type="submit" name="schedule_type" value="immediate" class="btn"
+            hx-post="/mrs/schedule-selected" hx-target="#mr-list" hx-swap="outerHTML">
+      Review now
+    </button>
+    <button type="submit" name="schedule_type" value="nightly" class="btn"
+            hx-post="/mrs/schedule-selected" hx-target="#mr-list" hx-swap="outerHTML">
+      Schedule nightly
+    </button>
+    <span class="hint">Selected MRs are reviewed with the default model profile
+    and the known library projects from Settings.</span>
+  </p>
+  </form>
   {% else %}
   <p class="hint">No open merge requests cached yet — click Refresh to fetch them from GitLab.</p>
   {% endif %}
