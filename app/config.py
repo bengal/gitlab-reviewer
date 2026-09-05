@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     llama_base_url: str | None = None
     anthropic_api_key: str | None = None
     review_image: str = "gitlab-mr-review/review-runner:latest"
+    # Comma-separated image name/prefix allowlist the podman orchestrator may
+    # run; empty means "only REVIEW_IMAGE itself is allowed".
+    review_image_allowlist: str = ""
+    # Network for review containers (host by default so they reach GitLab,
+    # the llama-server and the internet for clones).
+    podman_network: str = "host"
+    # Hard per-review timeout in seconds (30 minutes).
+    review_timeout_seconds: int = 1800
     orchestrator: Literal["podman", "fake"] = "podman"
 
 
