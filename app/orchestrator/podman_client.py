@@ -12,6 +12,15 @@ Security model (see PLAN "Key risks"):
   defaults to ``REVIEW_IMAGE`` itself) or the run is refused;
 - resource caps (``--memory``/``--cpus``/``--pids-limit``) plus
   ``--security-opt no-new-privileges``; ``--privileged`` is never used;
+- ``--userns=keep-id`` maps the launching host user to the same uid inside
+  the container, so the app-created ``/out`` bind mount (mode 0700, owned by
+  the app user) is writable by the container's non-root ``reviewer`` user —
+  under the default rootless userns the host uid lands on container uid 0
+  and every write to /out fails with EACCES;
+- the ``/out`` bind mount carries the ``Z`` (private) SELinux option so
+  enforcing hosts relabel it ``container_file_t``; without that the
+  ``container_t`` domain is denied the host's ``user_tmp_t`` label and the
+  same EACCES occurs even with correct ownership;
 - secrets travel only in the subprocess environment (argv carries ``-e KEY``
   names, never values);
 - streamed stdout/stderr is scrubbed of secret values before reaching the
@@ -103,11 +112,17 @@ class PodmanOrchestrator:
         argv.append(f"--cpus={self._cpus}")
         argv.append(f"--pids-limit={self._pids_limit}")
         argv += ["--security-opt", "no-new-privileges"]
+        # Keep the launching user's uid inside the container so the 0700
+        # mkdtemp'd out dir stays writable by the image's reviewer user
+        # (both uid 1000 by deployment design).
+        argv.append("--userns=keep-id")
         argv.append(f"--network={self._network}")
         argv.append(f"--name={name}")
         for key in env:
             argv += ["-e", key]
-        argv += ["--mount", f"type=bind,src={out_dir},dst=/out"]
+        # Z: private SELinux relabel (container_file_t) for enforcing hosts;
+        # a no-op where SELinux is off.
+        argv += ["--mount", f"type=bind,src={out_dir},dst=/out,Z"]
         argv.append(self._image)
         return argv
 

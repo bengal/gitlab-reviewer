@@ -230,9 +230,12 @@ def test_podman_argv_shape_and_caps(app):
     assert "--cpus=2" in argv
     assert "--pids-limit=256" in argv
     assert "--security-opt" in argv and "no-new-privileges" in argv
+    # /out must be writable by the container's non-root user: keep-id maps
+    # the app user's uid through, Z relabels the mount for SELinux hosts
+    assert "--userns=keep-id" in argv
     assert "--network=host" in argv
     assert "--name=mr-review-1-abc123" in argv
-    assert "--mount" in argv and "type=bind,src=/tmp/out-123,dst=/out" in argv
+    assert "--mount" in argv and "type=bind,src=/tmp/out-123,dst=/out,Z" in argv
     assert argv[-1] == "gitlab-mr-review/review-runner:test"
     # env: names in argv, values never
     assert "GITLAB_TOKEN" in argv and "-e" in argv
