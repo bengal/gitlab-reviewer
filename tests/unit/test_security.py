@@ -25,7 +25,9 @@ def test_decrypt_garbage_raises():
 
 
 def test_missing_key_raises(monkeypatch):
-    monkeypatch.delenv("SECRET_ENC_KEY", raising=False)
+    # Empty (not unset): a process env var shadows the repo's .env, which
+    # pydantic-settings still loads via env_file.
+    monkeypatch.setenv("SECRET_ENC_KEY", "")
     from app.config import get_settings
 
     get_settings.cache_clear()

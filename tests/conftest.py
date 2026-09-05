@@ -27,7 +27,10 @@ def app(tmp_path, monkeypatch):
     # No background pump/cron in tests: pumps are driven manually
     # (worker.pump_once) so tests stay deterministic.
     monkeypatch.setenv("DISABLE_SCHEDULER", "1")
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # Empty (not unset): a process env var shadows the repo's .env, which
+    # pydantic-settings still loads via env_file — an unset var would let a
+    # local ANTHROPIC_API_KEY leak into cfg and the container env.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
 
     from app.config import get_settings
     from app.main import create_app
