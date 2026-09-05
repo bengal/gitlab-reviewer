@@ -15,28 +15,31 @@
   <table class="mr-table">
     <thead>
       <tr>
-        <th>#</th>
+        <th class="nowrap">#</th>
         <th>Title</th>
-        <th>Author</th>
+        <th class="nowrap">Author</th>
         <th>Branches</th>
-        <th>SHA</th>
-        <th>State</th>
+        <th class="nowrap">SHA</th>
+        <th class="nowrap">State</th>
       </tr>
     </thead>
     <tbody>
       {% for mr in mrs %}
       <tr>
-        <td><a href="/mrs/{{ mr.iid }}">!{{ mr.iid }}</a></td>
+        <td class="nowrap"><a href="/mrs/{{ mr.iid }}">!{{ mr.iid }}</a></td>
         <td>
           <a href="/mrs/{{ mr.iid }}">{{ mr.title }}</a>
           {% if mr.web_url %}
           <a class="ext" href="{{ mr.web_url }}" target="_blank" rel="noopener" title="Open in GitLab">ext</a>
           {% endif %}
         </td>
-        <td>{{ mr.author }}</td>
-        <td><code>{{ mr.source_branch }}</code> &rarr; <code>{{ mr.target_branch }}</code></td>
-        <td><code>{{ mr.sha[:8] }}</code></td>
-        <td>{{ mr.state }}</td>
+        <td class="nowrap">{{ mr.author }}</td>
+        <td>
+          {# Hide the target branch when it is the project default; when the default is unknown, keep showing it. #}
+          <code>{{ mr.source_branch }}</code>{% if default_branch is none or mr.target_branch != default_branch %} &rarr; <code>{{ mr.target_branch }}</code>{% endif %}
+        </td>
+        <td class="nowrap"><code>{{ mr.sha[:8] }}</code></td>
+        <td class="nowrap">{{ mr.state }}</td>
       </tr>
       {% endfor %}
     </tbody>

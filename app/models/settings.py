@@ -24,3 +24,6 @@ class SettingsRow(Base):
     poll_interval_seconds: Mapped[int] = mapped_column(Integer, default=30)
     post_results_to_gitlab: Mapped[bool] = mapped_column(Boolean, default=False)
     known_libraries: Mapped[list] = mapped_column(JSON, default=list)
+    # The project's default branch, cached by mr_sync so the MR list can
+    # hide a redundant "→ <default>" target branch. None until first sync.
+    gitlab_default_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)

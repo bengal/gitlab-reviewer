@@ -54,6 +54,13 @@ def sync_open_mrs(db: Session) -> tuple[int, int, int, str | None]:
     except (GitLabError, requests.RequestException) as exc:
         return (0, 0, 0, str(exc))
 
+    # Cache the project's default branch for the list view (it hides a
+    # redundant "→ <default>" target); a failure here never fails the sync.
+    try:
+        row.gitlab_default_branch = client.get_project_default_branch()
+    except (GitLabError, requests.RequestException):
+        pass
+
     added = updated = unchanged = 0
     now = _utcnow_naive()
     for snap in snapshots:

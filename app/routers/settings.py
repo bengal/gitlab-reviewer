@@ -164,6 +164,7 @@ def settings_save(
     if errors is not None:
         return _render(request, db, row, raw, errors, None)
 
+    project_changed = row.gitlab_project != form.gitlab_project.strip()
     row.gitlab_url = form.gitlab_url.strip()
     row.gitlab_project = form.gitlab_project.strip()
     if form.gitlab_token.strip():
@@ -174,6 +175,8 @@ def settings_save(
     row.max_concurrent_reviews = form.max_concurrent_reviews
     row.poll_interval_seconds = form.poll_interval_seconds
     row.post_results_to_gitlab = form.post_results_to_gitlab
+    if project_changed:
+        row.gitlab_default_branch = None  # stale until the next sync
     db.commit()
     return _render(request, db, row, {}, None, "Settings saved.")
 

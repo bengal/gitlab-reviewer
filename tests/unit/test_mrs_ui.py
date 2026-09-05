@@ -61,6 +61,9 @@ def install_fake_client(monkeypatch, snapshots=None, exc=None):
                 raise exc
             return list(snapshots if snapshots is not None else SNAPSHOTS)
 
+        def get_project_default_branch(self):
+            return "main"
+
     monkeypatch.setattr(mr_sync, "GitLabClient", FakeClient)
 
 
@@ -105,6 +108,62 @@ def test_mrs_sync_populates_list(authed, db, monkeypatch):
     page = authed.get("/mrs")
     assert page.status_code == 200
     assert "first mr" in page.text.lower()
+
+
+def test_mrs_list_hides_default_target_branch(authed, db, monkeypatch):
+    configure_row(db)
+    snapshots = [
+        MrSnapshot(
+            iid=1,
+            title="To default",
+            author="alice",
+            source_branch="feature-1",
+            target_branch="main",
+            sha="a" * 40,
+            web_url="https://gitlab.example.com/group/proj/-/merge_requests/1",
+            state="opened",
+            updated_at=None,
+        ),
+        MrSnapshot(
+            iid=2,
+            title="To other",
+            author="bob",
+            source_branch="feature-2",
+            target_branch="legacy",
+            sha="b" * 40,
+            web_url="https://gitlab.example.com/group/proj/-/merge_requests/2",
+            state="opened",
+            updated_at=None,
+        ),
+    ]
+    install_fake_client(monkeypatch, snapshots=snapshots)
+
+    resp = authed.post("/mrs/sync")
+    assert resp.status_code == 200
+
+    # Only the non-default target gets the arrow suffix
+    assert resp.text.count("&rarr;") == 1
+    assert "legacy" in resp.text
+
+
+def test_mrs_list_shows_target_when_default_unknown(authed, db, monkeypatch):
+    configure_row(db)
+
+    class FakeClient:
+        def __init__(self, settings_row):
+            pass
+
+        def list_open_merge_requests(self):
+            return [SNAPSHOTS[0]]
+
+        def get_project_default_branch(self):
+            return None
+
+    monkeypatch.setattr(mr_sync, "GitLabClient", FakeClient)
+
+    resp = authed.post("/mrs/sync")
+    assert resp.status_code == 200
+    assert resp.text.count("&rarr;") == 1  # no default known: target always shown
 
 
 def test_mrs_sync_shows_error_message(authed, db, monkeypatch):

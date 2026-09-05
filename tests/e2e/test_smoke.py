@@ -94,6 +94,9 @@ class FakeGitLabClient:
             ),
         ]
 
+    def get_project_default_branch(self) -> str | None:
+        return "main"
+
     def test_connection(self) -> tuple[bool, str]:
         return True, "fake connection ok"
 

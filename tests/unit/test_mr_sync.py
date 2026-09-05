@@ -47,7 +47,7 @@ def make_snapshots(sha: str | None = None) -> list[MrSnapshot]:
     ]
 
 
-def install_fake_client(monkeypatch, snapshots=None, exc=None):
+def install_fake_client(monkeypatch, snapshots=None, exc=None, default_branch="main"):
     class FakeClient:
         def __init__(self, settings_row):
             pass
@@ -56,6 +56,9 @@ def install_fake_client(monkeypatch, snapshots=None, exc=None):
             if exc is not None:
                 raise exc
             return list(snapshots if snapshots is not None else make_snapshots())
+
+        def get_project_default_branch(self):
+            return default_branch
 
     monkeypatch.setattr(mr_sync, "GitLabClient", FakeClient)
 
@@ -139,6 +142,36 @@ def test_sync_error_returns_message_without_raising(db, configured, monkeypatch)
     assert error is not None
     assert "401" in error
     assert db.scalar(select(func.count()).select_from(MergeRequest)) == 0
+
+
+def test_sync_caches_project_default_branch(db, configured, monkeypatch):
+    install_fake_client(monkeypatch, default_branch="trunk")
+
+    mr_sync.sync_open_mrs(db)
+
+    assert configured.gitlab_default_branch == "trunk"
+
+
+def test_sync_keeps_default_branch_when_project_fetch_fails(db, configured, monkeypatch):
+    configured.gitlab_default_branch = "main"
+    db.commit()
+
+    class FakeClient:
+        def __init__(self, settings_row):
+            pass
+
+        def list_open_merge_requests(self):
+            return make_snapshots()
+
+        def get_project_default_branch(self):
+            raise GitLabError("HTTP 500 from https://gitlab.example.com: boom")
+
+    monkeypatch.setattr(mr_sync, "GitLabClient", FakeClient)
+
+    added, updated, unchanged, error = mr_sync.sync_open_mrs(db)
+
+    assert (added, updated, unchanged, error) == (2, 0, 0, None)
+    assert configured.gitlab_default_branch == "main"  # stale value kept
 
 
 def test_sync_not_configured_returns_hint(db, monkeypatch):

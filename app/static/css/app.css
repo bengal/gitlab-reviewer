@@ -167,6 +167,12 @@ code {
   color: #57606a;
 }
 
+/* Short table cells (iid, author, sha, state): never wrap, even when the
+   auto table layout squeezes the column narrow. */
+.mr-table .nowrap {
+  white-space: nowrap;
+}
+
 .mr-detail {
   display: grid;
   grid-template-columns: max-content 1fr;

@@ -116,6 +116,12 @@ class GitLabClient:
         resp = self.api_get(f"{self._project_path()}/merge_requests/{iid}")
         return MrSnapshot.from_gitlab(resp.json())
 
+    def get_project_default_branch(self) -> str | None:
+        """The project's default branch name (GET /projects/:id), or None."""
+        data = self.api_get(self._project_path()).json()
+        branch = data.get("default_branch")
+        return branch if isinstance(branch, str) and branch else None
+
     def post_note(self, iid: int, body: str) -> int:
         """Post an MR note; returns the created note id."""
         if not self.base_url:

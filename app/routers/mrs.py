@@ -39,7 +39,13 @@ def mr_list(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     return _templates(request).TemplateResponse(
         request,
         "mrs/list.html",
-        {"configured": configured, "mrs": mrs, "sync_message": None, "sync_error": False},
+        {
+            "configured": configured,
+            "mrs": mrs,
+            "default_branch": row.gitlab_default_branch,
+            "sync_message": None,
+            "sync_error": False,
+        },
     )
 
 
@@ -64,6 +70,7 @@ def mr_sync(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         {
             "configured": True,
             "mrs": _list_mrs(db, row),
+            "default_branch": row.gitlab_default_branch,
             "sync_message": message,
             "sync_error": failed,
         },
