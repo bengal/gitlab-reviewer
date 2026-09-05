@@ -1,0 +1,371 @@
+#!/usr/bin/env python3
+"""Entrypoint for the review-runner container (Python stdlib only).
+
+Implements the MILESTONES.md "Milestone 5" entrypoint steps exactly:
+
+1. read the run environment (see ``app/orchestrator/run_review.build_env``);
+2. clone the target repo @ SOURCE_BRANCH into ``/work/target`` with a git
+   credential helper (the token never appears in any argv) and fetch
+   TARGET_BRANCH as ``origin/<target>`` so the MR diff can be produced;
+3. clone each EXTRA_PROJECTS entry read-only into ``/work/lib/<path>``;
+4. render ``/work/opencode.json`` from ``opencode.json.j2``
+   (``string.Template``, stdlib only) so the rendered config is equivalent
+   to ``app/orchestrator/opencode_template.render_opencode_json``;
+5. build the prompt from REVIEW_PROMPT + diff instructions;
+6. run ``opencode run -m <provider>/<model> "<prompt>"`` with
+   ``cwd=/work/target``, ``OPENCODE_CONFIG`` pointing at the rendered json,
+   ``subprocess.run(timeout=REVIEW_TIMEOUT_SECONDS)``, capturing all output
+   to LOG_PATH (default ``/out/review.log``);
+7. extract the LAST fenced ```json block from the output into RESULT_PATH
+   (default ``/out/result.json``) after validating it against the
+   result_json schema; on parse failure write the raw output to
+   ``result.md`` and still exit 0; timeout -> partial log + exit 124;
+8. always write a final ``EXIT=<code>`` log line.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from string import Template
+
+LOG_PATH = Path(os.environ.get("LOG_PATH", "/out/review.log"))
+RESULT_PATH = Path(os.environ.get("RESULT_PATH", "/out/result.json"))
+RESULT_MD_PATH = RESULT_PATH.with_name("result.md")
+# WORK_DIR/OPENCODE_TEMPLATE are overridable so the entrypoint can be tested
+# outside the container; in production they are /work and /opencode.json.j2.
+WORK_DIR = Path(os.environ.get("WORK_DIR", "/work"))
+TEMPLATE_PATH = Path(
+    os.environ.get("OPENCODE_TEMPLATE") or Path(__file__).resolve().parent / "opencode.json.j2"
+)
+
+FINDING_BUCKETS = ("critical", "important", "minor", "positive")
+
+_FENCED_JSON_RE = re.compile(r"```json[ \t]*\r?\n(.*?)```", re.DOTALL)
+
+REQUIRED_ENV = (
+    "GITLAB_URL",
+    "TARGET_PROJECT",
+    "SOURCE_BRANCH",
+    "TARGET_BRANCH",
+    "OPENCODE_PROVIDER",
+    "OPENCODE_MODEL",
+    "REVIEW_PROMPT",
+    "REVIEW_TIMEOUT_SECONDS",
+)
+
+
+def log(message: str) -> None:
+    """Append a line to the review log and mirror it on stdout, where the
+    podman orchestrator streams it into review_run.log."""
+    print(message, flush=True)
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(message + "\n")
+    except OSError as exc:
+        print(f"warning: cannot write {LOG_PATH}: {exc}", file=sys.stderr, flush=True)
+
+
+def _git_env() -> dict[str, str]:
+    """Env for git subprocesses with an argv-safe credential helper.
+
+    The helper is injected through the ``GIT_CONFIG_*`` variables (git
+    >= 2.31) instead of writing it to argv via ``git config
+    credential.helper ...``: the helper body references ``$GITLAB_TOKEN``
+    at run time, so the token itself never shows up in any process argv —
+    only in this container's environment, which is never logged. Same
+    helper for every clone/fetch (per-repo scoping by subprocess env).
+    ``GIT_TERMINAL_PROMPT=0`` makes credential prompts fail fast instead
+    of hanging headless.
+    """
+    env = dict(os.environ)
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "credential.helper"
+    env["GIT_CONFIG_VALUE_0"] = "!f() { echo username=gitlab-ci-token; echo password=${GITLAB_TOKEN}; }; f"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def _run_git(args: list[str], cwd: Path | None = None) -> str:
+    """Run a git command with the credential-helper env; raise on failure."""
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd) if cwd is not None else None,
+        env=_git_env(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed (exit {proc.returncode}):\n{proc.stdout.strip()}")
+    return proc.stdout
+
+
+def _target_repo_url() -> str:
+    """Clone URL for the target project: ``<GITLAB_URL>/<TARGET_PROJECT>.git``."""
+    base = os.environ["GITLAB_URL"].strip().rstrip("/")
+    project = os.environ["TARGET_PROJECT"].strip().strip("/")
+    return f"{base}/{project}.git"
+
+
+def _clone_target(target: Path) -> None:
+    source = os.environ["SOURCE_BRANCH"]
+    target_branch = os.environ["TARGET_BRANCH"]
+    url = _target_repo_url()
+    if target.exists():
+        shutil.rmtree(target)
+    log(f"cloning {url} (branch {source}) -> {target}")
+    _run_git(["clone", "--branch", source, url, str(target)])
+    _run_git(["fetch", "origin", f"{target_branch}:refs/remotes/origin/{target_branch}"], cwd=target)
+    log(f"fetched base branch origin/{target_branch}")
+
+
+def _make_read_only(root: Path) -> None:
+    """Extra repos are read-only context: strip write bits (best effort)."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            entry = Path(dirpath) / name
+            try:
+                entry.chmod(entry.stat().st_mode & ~0o222)
+            except OSError:
+                pass
+    try:
+        root.chmod(root.stat().st_mode & ~0o222)
+    except OSError:
+        pass
+
+
+def _clone_extra_projects() -> None:
+    raw = os.environ.get("EXTRA_PROJECTS", "").strip()
+    if not raw:
+        return
+    try:
+        entries = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"EXTRA_PROJECTS is not valid JSON: {exc}") from exc
+    if not isinstance(entries, list):
+        raise RuntimeError("EXTRA_PROJECTS must be a JSON list of {url, ref, path} objects")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            log(f"skipping malformed EXTRA_PROJECTS entry: {entry!r}")
+            continue
+        url = str(entry.get("url") or "").strip()
+        ref = str(entry.get("ref") or "").strip()
+        path = str(entry.get("path") or "").strip().strip("/")
+        if not url or not path:
+            log(f"skipping EXTRA_PROJECTS entry without url/path: {entry!r}")
+            continue
+        if ".." in path.split("/"):
+            log(f"skipping EXTRA_PROJECTS entry with unsafe path: {path!r}")
+            continue
+        dest = WORK_DIR / "lib" / path
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        log(f"cloning extra library repo {url} (read-only) -> {dest}")
+        args = ["clone"]
+        if ref:
+            args += ["--branch", ref]
+        args += [url, str(dest)]
+        _run_git(args)
+        _make_read_only(dest)
+
+
+def _render_opencode_config() -> Path:
+    """Render opencode.json from the string.Template file.
+
+    Mirrors ``app/orchestrator/opencode_template.render_opencode_json``:
+    anthropic -> ``@ai-sdk/anthropic``; anything else (local llama-server)
+    -> ``@ai-sdk/openai-compatible`` with ``baseURL``; ``apiKey`` only when
+    one is provided; the headless permission block is always allowed.
+    """
+    provider = os.environ["OPENCODE_PROVIDER"]
+    model_id = os.environ["OPENCODE_MODEL"]
+    options: dict[str, str] = {}
+    if provider == "anthropic":
+        npm = "@ai-sdk/anthropic"
+    else:
+        npm = "@ai-sdk/openai-compatible"
+        options["baseURL"] = os.environ.get("OPENCODE_BASE_URL", "")
+    api_key = os.environ.get("OPENCODE_API_KEY", "")
+    if api_key:
+        options["apiKey"] = api_key
+
+    rendered = Template(TEMPLATE_PATH.read_text(encoding="utf-8")).substitute(
+        provider=provider,
+        model=f"{provider}/{model_id}",
+        provider_block=json.dumps({"npm": npm, "options": options}),
+    )
+    json.loads(rendered)  # fail fast if the template ever breaks the JSON
+    config_path = WORK_DIR / "opencode.json"
+    config_path.write_text(rendered.rstrip("\n") + "\n", encoding="utf-8")
+    log(f"rendered opencode config -> {config_path}")
+    return config_path
+
+
+def _build_prompt() -> str:
+    """REVIEW_PROMPT (base prompt + context + output contract) + diff how-to."""
+    source = os.environ["SOURCE_BRANCH"]
+    target_branch = os.environ["TARGET_BRANCH"]
+    diff_instructions = "\n".join(
+        (
+            "## Working tree and diff",
+            f"- The MR head ({source}) is checked out in the current directory.",
+            f"- The base branch is available as origin/{target_branch}.",
+            f"- Produce the MR diff with: git diff origin/{target_branch}...HEAD",
+            "- Any extra library repos are mounted read-only under /work/lib/.",
+        )
+    )
+    return f"{os.environ['REVIEW_PROMPT'].rstrip()}\n\n{diff_instructions}"
+
+
+def _run_opencode(prompt: str, config_path: Path, timeout: float) -> tuple[int, str]:
+    """Run opencode headless; return (exit_code, full output). 124 = timeout
+    (the child is killed by subprocess.run; any partial output is kept)."""
+    provider = os.environ["OPENCODE_PROVIDER"]
+    model_id = os.environ["OPENCODE_MODEL"]
+    command = ["opencode", "run", "-m", f"{provider}/{model_id}", prompt]
+    env = dict(os.environ)
+    env["OPENCODE_CONFIG"] = str(config_path)
+    log(f"running opencode -m {provider}/{model_id} (timeout {timeout:g}s)")
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(WORK_DIR / "target"),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = exc.output
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
+        log(f"TIMED OUT: opencode still running after {timeout:g}s; partial output follows")
+        if partial:
+            log(partial.rstrip("\n"))
+        return 124, partial or ""
+    return proc.returncode, proc.stdout or ""
+
+
+def _coerce_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _normalize_result(data: object) -> dict[str, object]:
+    """Validate the fenced JSON against the result_json schema and normalize
+    it. Tolerant, like app/schemas/result: missing keys get defaults, wrong
+    types are coerced. Raises ValueError when it cannot be a result."""
+    if not isinstance(data, dict):
+        raise ValueError("result block must be a JSON object")
+    findings = data.get("findings")
+    if findings is None:
+        findings = {}
+    elif isinstance(findings, list):
+        findings = {"important": findings}
+    if not isinstance(findings, dict):
+        raise ValueError("'findings' must be a JSON object")
+    normalized_findings: dict[str, list[dict[str, object]]] = {}
+    for bucket in FINDING_BUCKETS:
+        items = findings.get(bucket) or []
+        if not isinstance(items, list):
+            raise ValueError(f"'findings.{bucket}' must be a list")
+        normalized_findings[bucket] = [
+            item if isinstance(item, dict) else {"description": _coerce_text(item)} for item in items
+        ]
+    questions = data.get("questions")
+    if questions is None:
+        questions = []
+    elif isinstance(questions, str):
+        questions = [questions] if questions.strip() else []
+    elif not isinstance(questions, list):
+        questions = [questions]
+    return {
+        "summary": _coerce_text(data.get("summary")),
+        "findings": normalized_findings,
+        "commit_message_review": _coerce_text(data.get("commit_message_review")),
+        "questions": [_coerce_text(question) for question in questions if question is not None],
+    }
+
+
+def _extract_result(text: str) -> dict[str, object] | None:
+    """The LAST fenced ```json block of ``text``, schema-validated; None when
+    absent or unparseable."""
+    matches = _FENCED_JSON_RE.findall(text)
+    if not matches:
+        return None
+    try:
+        data = json.loads(matches[-1])
+    except json.JSONDecodeError:
+        return None
+    try:
+        return _normalize_result(data)
+    except ValueError:
+        return None
+
+
+def run() -> int:
+    missing = [key for key in REQUIRED_ENV if not os.environ.get(key)]
+    if missing:
+        log(f"ERROR: missing required environment variables: {', '.join(missing)}")
+        return 1
+    try:
+        timeout = float(os.environ["REVIEW_TIMEOUT_SECONDS"])
+    except ValueError:
+        log(f"ERROR: REVIEW_TIMEOUT_SECONDS is not a number: {os.environ['REVIEW_TIMEOUT_SECONDS']!r}")
+        return 1
+
+    try:
+        WORK_DIR.mkdir(parents=True, exist_ok=True)
+        _clone_target(WORK_DIR / "target")
+        _clone_extra_projects()
+        config_path = _render_opencode_config()
+        prompt = _build_prompt()
+    except (OSError, RuntimeError) as exc:
+        log(f"ERROR: {exc}")
+        return 1
+
+    exit_code, output = _run_opencode(prompt, config_path, timeout)
+    if output:
+        log(output.rstrip("\n"))
+    if exit_code not in (0, 124):
+        log(f"opencode exited with code {exit_code}")
+
+    result = _extract_result(output)
+    if result is not None:
+        RESULT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RESULT_PATH.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        log(f"wrote structured result -> {RESULT_PATH}")
+    elif output.strip():
+        RESULT_MD_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RESULT_MD_PATH.write_text(output, encoding="utf-8")
+        log(f"no valid fenced json block; wrote raw markdown fallback -> {RESULT_MD_PATH}")
+    else:
+        log("no valid fenced json block and no output to fall back to")
+    return exit_code
+
+
+def main() -> int:
+    try:
+        code = run()
+    except Exception as exc:  # the entrypoint must always end with an EXIT line
+        log(f"ERROR: unexpected failure: {exc!r}")
+        code = 1
+    log(f"EXIT={code}")
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,32 @@
+# Review-runner image: one ephemeral container per MR review
+# (launched via `podman run --rm` by the app's podman orchestrator).
+#
+# opencode install method: pinned release binary (single static executable)
+# downloaded from the official GitHub releases at build time, verified by a
+# smoke test below. Chosen over `npm i -g opencode-ai` to stay on the
+# minimal python:3.12-slim base without a Node.js toolchain. Bump
+# OPENCODE_VERSION to upgrade; if the release asset layout changes, adjust
+# OPENCODE_ASSET_URL (the `opencode --version` smoke test will fail the
+# build on a wrong URL).
+FROM python:3.12-slim
+
+ARG OPENCODE_VERSION=0.6.5
+ARG OPENCODE_ASSET_URL=https://github.com/sst/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL -o /usr/local/bin/opencode "${OPENCODE_ASSET_URL}" \
+    && chmod a+rx /usr/local/bin/opencode \
+    && opencode --version
+
+# Non-root user; /work is the per-run workspace, /out is the bind mount the
+# app reads results from (created here so the user owns both).
+RUN useradd --create-home --uid 1000 --user-group reviewer \
+    && mkdir -p /work /out \
+    && chown -R reviewer:reviewer /work /out
+
+WORKDIR /work
+COPY --chown=reviewer:reviewer entrypoint.py opencode.json.j2 /
+USER reviewer
+ENTRYPOINT ["python", "/entrypoint.py"]
