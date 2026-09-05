@@ -202,6 +202,7 @@ def test_entrypoint_json_result(tmp_path, gitlab, extra_repo, fake_opencode):
     assert config["provider"]["local"] == {
         "npm": "@ai-sdk/openai-compatible",
         "options": {"baseURL": "http://127.0.0.1:59999/v1"},
+        "models": {"qwen3-32b": {"name": "qwen3-32b"}},
     }
     assert config["permission"] == {
         "bash": "allow",

@@ -4,11 +4,19 @@ Used by tests and mirrors what the review-runner entrypoint produces from its
 env, so the two can be asserted to agree. Shape (per provider):
 
     {
-      "provider": {"<provider>": {"npm": "<ai-sdk package>", "options": {...}}},
+      "provider": {"<provider>": {
+          "npm": "<ai-sdk package>",
+          "options": {...},
+          "models": {"<model_id>": {"name": "<model_id>"}}   # custom providers only
+      }},
       "model": "<provider>/<model_id>",
       "permission": {"bash": "allow", "edit": "allow", "webfetch": "allow",
                       "external_directory": "allow"}
     }
+
+Custom (openai-compatible) providers carry no built-in model list, so the
+profile's model must be declared in ``models`` or opencode fails with
+ProviderModelNotFoundError; built-in providers (anthropic) know their models.
 
 ``profile.extra_opencode_json`` is deep-merged over the rendered config (so it
 can add keys or extend provider options without clobbering the base).
@@ -48,7 +56,12 @@ def _provider_block(profile: ModelProfile) -> dict[str, Any]:
     api_key = resolve_api_key(profile)
     if api_key:
         options["apiKey"] = api_key
-    return {"npm": npm, "options": options}
+    block: dict[str, Any] = {"npm": npm, "options": options}
+    if npm == OPENAI_COMPATIBLE_NPM:
+        # Custom npm providers ship no model list; declare the model or
+        # opencode raises ProviderModelNotFoundError for <provider>/<model_id>.
+        block["models"] = {profile.model_id: {"name": profile.model_id}}
+    return block
 
 
 def _deep_merge(base: Any, extra: Any) -> Any:

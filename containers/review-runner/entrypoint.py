@@ -221,6 +221,9 @@ def _render_opencode_config() -> Path:
     anthropic -> ``@ai-sdk/anthropic``; anything else (local llama-server)
     -> ``@ai-sdk/openai-compatible`` with ``baseURL``; ``apiKey`` only when
     one is provided; the headless permission block is always allowed.
+    Custom (openai-compatible) providers get a ``models`` block declaring the
+    profile's model — opencode has no built-in model list for them and fails
+    with ProviderModelNotFoundError without it.
     """
     provider = os.environ["OPENCODE_PROVIDER"]
     model_id = os.environ["OPENCODE_MODEL"]
@@ -234,10 +237,14 @@ def _render_opencode_config() -> Path:
     if api_key:
         options["apiKey"] = api_key
 
+    provider_block: dict[str, object] = {"npm": npm, "options": options}
+    if npm == "@ai-sdk/openai-compatible":
+        provider_block["models"] = {model_id: {"name": model_id}}
+
     rendered = Template(TEMPLATE_PATH.read_text(encoding="utf-8")).substitute(
         provider=provider,
         model=f"{provider}/{model_id}",
-        provider_block=json.dumps({"npm": npm, "options": options}),
+        provider_block=json.dumps(provider_block),
     )
     json.loads(rendered)  # fail fast if the template ever breaks the JSON
     config_path = WORK_DIR / "opencode.json"

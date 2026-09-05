@@ -31,15 +31,14 @@ def test_anthropic_rendering(app, monkeypatch):
     assert block["npm"] == "@ai-sdk/anthropic"
     assert block["options"]["apiKey"] == "sk-ant-testkey-123"  # decrypted, not Fernet ciphertext
     assert "baseURL" not in block["options"]
+    assert "models" not in block  # built-in provider knows its own models
     assert config["model"] == "anthropic/claude-sonnet-4-20250514"
     assert config["permission"] == PERMISSIONS
 
 
 def test_local_rendering_has_base_url_no_api_key(app, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    profile = _profile(
-        provider="local", model_id="qwen3-32b", base_url="http://llama-server:8080/v1"
-    )
+    profile = _profile(provider="local", model_id="qwen3-32b", base_url="http://llama-server:8080/v1")
     config = render_opencode_json(profile)
 
     assert set(config["provider"]) == {"local"}
@@ -47,6 +46,9 @@ def test_local_rendering_has_base_url_no_api_key(app, monkeypatch):
     assert block["npm"] == "@ai-sdk/openai-compatible"
     assert block["options"]["baseURL"] == "http://llama-server:8080/v1"
     assert "apiKey" not in block["options"]
+    # custom providers need the model declared or opencode raises
+    # ProviderModelNotFoundError
+    assert block["models"] == {"qwen3-32b": {"name": "qwen3-32b"}}
     assert config["model"] == "local/qwen3-32b"
     assert config["permission"] == PERMISSIONS
 
@@ -67,10 +69,7 @@ def test_local_api_key_placement(app, monkeypatch):
 def test_api_key_from_named_env_var(app, monkeypatch):
     monkeypatch.setenv("MR_REVIEW_KEY", "env-key-12345678")
     profile = _profile(api_key_env="MR_REVIEW_KEY")
-    assert (
-        render_opencode_json(profile)["provider"]["anthropic"]["options"]["apiKey"]
-        == "env-key-12345678"
-    )
+    assert render_opencode_json(profile)["provider"]["anthropic"]["options"]["apiKey"] == "env-key-12345678"
 
 
 def test_anthropic_falls_back_to_process_key(app, monkeypatch):
