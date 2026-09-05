@@ -112,7 +112,9 @@ def test_build_env_local_and_anthropic_variants(app, db, mr, settings_row):
         model_id="claude-sonnet-4",
         api_key=encrypt_secret("ant-key-123456789"),
     )
-    local = ModelProfile(name="local-k", provider="local", model_id="qwen3-32b", base_url="http://llama:8080/v1")
+    local = ModelProfile(
+        name="local-k", provider="local", model_id="qwen3-32b", base_url="http://llama:8080/v1"
+    )
     db.add_all([anth, local])
     db.commit()
 
@@ -221,7 +223,8 @@ def test_podman_argv_shape_and_caps(app):
     )
     joined = " ".join(argv)
 
-    assert argv[:3] == ["podman", "run", "--rm"]
+    assert argv[:2] == ["podman", "run"]
+    assert "--rm" not in argv  # failed runs keep their container for post-mortems
     assert "--privileged" not in argv
     assert "--memory=2g" in argv
     assert "--cpus=2" in argv
@@ -256,19 +259,45 @@ def test_podman_image_allowlist_prefix_entry(app, monkeypatch):
 
 
 class _FakeProc:
-    """stdout is any iterable of lines (or a generator that blocks mid-stream)."""
+    """stdout is any iterable of lines (or a generator that blocks mid-stream).
+
+    Also implements the context-manager/communicate surface so it stands in
+    for the ``subprocess.run``-based ``podman ps``/``podman rm`` lifecycle
+    calls (which must not consume the fake's stdout)."""
 
     def __init__(self, stdout, exit_code=0):
         self._stdout = stdout
         self._exit_code = exit_code
         self.killed = False
+        self.args = []
 
     @property
     def stdout(self):
         return self._stdout
 
+    @property
+    def returncode(self):
+        return self._exit_code
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def communicate(self, *args, **kwargs):
+        # list stdout is consumed whole (subprocess.run callers); the
+        # generator stdout of streaming runs is left for the reader thread
+        if isinstance(self._stdout, list):
+            text = "".join(line if line.endswith("\n") else line + "\n" for line in self._stdout)
+            return (text, None)
+        return ("", None)
+
     def kill(self):
         self.killed = True
+
+    def poll(self):
+        return self._exit_code
 
     def wait(self):
         return self._exit_code
@@ -291,6 +320,8 @@ def test_podman_success_path_streams_and_reads_results(app, db, mr, profile, set
     captured = {}
 
     def fake_popen(argv, **kwargs):
+        if argv[1] in ("ps", "rm"):  # container lifecycle housekeeping
+            return _FakeProc([], exit_code=0)
         captured["argv"] = argv
         captured["env"] = kwargs["env"]
         mount = next(a for a in argv if a.startswith("type=bind,src="))
@@ -342,3 +373,81 @@ def test_podman_timeout_sets_timed_out_and_kills(app, db, mr, profile, settings_
     assert fake.killed is True
     assert elapsed < 2.0  # hard timeout enforced, did not wait for the fake
     assert "line one" in logs  # pre-timeout output still streamed
+
+
+# -- Container lifecycle: kept on failure, removed on success, purged when stale --
+
+
+def _lifecycle_setup(db, mr, profile, settings_row):
+    settings_row.gitlab_token = encrypt_secret(GITLAB_TOKEN)
+    db.commit()
+    job = _enqueue(db, mr, profile)
+    run = ReviewRun(scheduled_job_id=job.id, merge_request_id=mr.id, model_profile_id=profile.id)
+    db.add(run)
+    db.commit()
+    return job, run
+
+
+def _lifecycle_fake_popen(removed, ps_lines, run_exit_code, write_result):
+    def fake_popen(argv, **kwargs):
+        if argv[1] == "ps":
+            return _FakeProc(ps_lines, exit_code=0)
+        if argv[1] == "rm":
+            removed.append(argv[2])
+            return _FakeProc([], exit_code=0)
+        if write_result:
+            src = next(a for a in argv if a.startswith("type=bind,src=")).split("src=")[1].split(",")[0]
+            with open(f"{src}/result.json", "w", encoding="utf-8") as fh:
+                json.dump({"summary": "ok", "findings": {"critical": []}}, fh)
+        return _FakeProc(["cid-abc123", "some output"], exit_code=run_exit_code)
+
+    return fake_popen
+
+
+def test_podman_success_removes_its_container(app, db, mr, profile, settings_row, monkeypatch):
+    job, run = _lifecycle_setup(db, mr, profile, settings_row)
+    removed: list[str] = []
+    monkeypatch.setattr(
+        subprocess, "Popen", _lifecycle_fake_popen(removed, ps_lines=[], run_exit_code=0, write_result=True)
+    )
+
+    outcome = PodmanOrchestrator(timeout_seconds=5).run_review(run, job)
+
+    assert outcome.exit_code == 0
+    # exactly one removal: the successful run's own container
+    assert len(removed) == 1
+    assert removed[0].startswith(f"mr-review-{run.id}-")
+
+
+def test_podman_failure_keeps_its_container(app, db, mr, profile, settings_row, monkeypatch):
+    job, run = _lifecycle_setup(db, mr, profile, settings_row)
+    removed: list[str] = []
+    monkeypatch.setattr(
+        subprocess, "Popen", _lifecycle_fake_popen(removed, ps_lines=[], run_exit_code=1, write_result=False)
+    )
+
+    outcome = PodmanOrchestrator(timeout_seconds=5).run_review(run, job)
+
+    assert outcome.exit_code == 1
+    assert removed == []  # failed container kept for post-mortems
+
+
+def test_podman_purge_removes_only_stale_containers(app, db, mr, profile, settings_row, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    job, run = _lifecycle_setup(db, mr, profile, settings_row)
+    now = datetime.now(UTC)
+    stale = (now - timedelta(hours=25)).strftime("%Y-%m-%d %H:%M:%S.123456789 +0000 UTC")
+    fresh = now.strftime("%Y-%m-%d %H:%M:%S.123456789 +0000 UTC")
+    ps_lines = [f"aa11bb22 {stale}\n", f"cc33dd44 {fresh}\n"]
+    removed: list[str] = []
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        _lifecycle_fake_popen(removed, ps_lines=ps_lines, run_exit_code=1, write_result=False),
+    )
+
+    outcome = PodmanOrchestrator(timeout_seconds=5).run_review(run, job)
+
+    assert outcome.exit_code == 1
+    assert removed == ["aa11bb22"]  # stale purged, fresh kept, failed run kept

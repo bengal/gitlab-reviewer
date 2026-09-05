@@ -1,7 +1,8 @@
-"""Review execution substrate: one ephemeral container (or fake) per run.
+"""Review execution substrate: one short-lived container (or fake) per run.
 
 ``Orchestrator`` is the interface the worker (M6) programs against;
-``PodmanOrchestrator`` implements it with ``podman run --rm`` and
+``PodmanOrchestrator`` implements it with ``podman run`` (no ``--rm``:
+failed/timed-out containers are kept for post-mortems) and
 ``FakeOrchestrator`` is an in-memory stand-in for dev/tests.
 """
 

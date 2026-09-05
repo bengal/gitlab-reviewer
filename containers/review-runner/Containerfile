@@ -1,5 +1,6 @@
-# Review-runner image: one ephemeral container per MR review
-# (launched via `podman run --rm` by the app's podman orchestrator).
+# Review-runner image: one short-lived container per MR review (launched via
+# `podman run` by the app's podman orchestrator; failed runs are kept for
+# post-mortems — see app/orchestrator/podman_client.py).
 #
 # opencode install method: pinned release binary (single static executable)
 # downloaded from the official GitHub releases at build time, verified by a

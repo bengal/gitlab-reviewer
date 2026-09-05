@@ -1,4 +1,11 @@
-"""Podman orchestrator: one ephemeral ``podman run --rm`` container per review.
+"""Podman orchestrator: one short-lived ``podman run`` container per review.
+
+Container lifecycle: containers are NOT removed with ``--rm``. Successful
+runs are removed right after their results are read; failed/timed-out runs
+are kept so the container's own state — in particular opencode's log under
+``/home/reviewer/.local/share/opencode/log`` — can be inspected (``podman
+ps -a --filter name=mr-review-`` + ``podman cp``). Stale exited review
+containers older than 24h are purged at the start of each run.
 
 Security model (see PLAN "Key risks"):
 - the image must match the allowlist (``REVIEW_IMAGE_ALLOWLIST``, which
@@ -15,6 +22,7 @@ Security model (see PLAN "Key risks"):
 import json
 import os
 import queue
+import re
 import secrets
 import shutil
 import subprocess
@@ -22,6 +30,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 from app.config import Settings, get_settings
@@ -31,6 +40,12 @@ from app.orchestrator import RunOutcome
 from app.orchestrator.run_review import build_env, scrub_secrets, secret_env_values
 
 _POLL_SECONDS = 0.05
+_STALE_CONTAINER_SECONDS = 24 * 3600
+# ``podman ps --format '{{.ID}} {{.CreatedAt}}'`` -> e.g.
+# "f05a316845dc 2026-09-05 09:09:50.355623967 +0200 CEST"
+_CONTAINER_CREATED_RE = re.compile(
+    r"^([0-9a-f]+)\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})(?:\.\d+)?\s+([+-]\d{4})"
+)
 
 
 def image_allowed(image: str, allowlist: list[str]) -> bool:
@@ -76,13 +91,14 @@ class PodmanOrchestrator:
         return entries or [self._settings.review_image]
 
     def build_argv(self, *, env: dict[str, str], out_dir: str | Path, name: str) -> list[str]:
-        """``podman run --rm`` argv for one run.
+        """``podman run`` argv for one run (no ``--rm``: see module docstring
+        for the keep-on-failure lifecycle).
 
         Env values are deliberately NOT in argv: each key is passed as
         ``-e KEY`` (podman picks the value up from this process' environment,
         which the caller sets via the subprocess ``env=`` argument).
         """
-        argv = [self._podman_bin, "run", "--rm"]
+        argv = [self._podman_bin, "run"]
         argv.append(f"--memory={self._memory}")
         argv.append(f"--cpus={self._cpus}")
         argv.append(f"--pids-limit={self._pids_limit}")
@@ -109,6 +125,7 @@ class PodmanOrchestrator:
         if mr is None or profile is None:
             return RunOutcome(exit_code=1, error="MR or model profile missing for this job")
 
+        self._purge_stale_containers()
         env = build_env(job, profile, settings_row, mr=mr)
         scrub_with = secret_env_values(env)
         out_dir = Path(tempfile.mkdtemp(prefix="mr-review-out-"))
@@ -134,6 +151,7 @@ class PodmanOrchestrator:
             error = f"review container exited with code {exit_code}"
         else:
             error = None
+            self._remove_container(name)  # nothing left to inspect on success
         return RunOutcome(
             exit_code=exit_code,
             result_json=result_json,
@@ -141,6 +159,60 @@ class PodmanOrchestrator:
             error=error,
             timed_out=timed_out,
         )
+
+    def _remove_container(self, name: str) -> None:
+        """Best-effort ``podman rm`` for an exited review container."""
+        try:
+            subprocess.run(
+                [self._podman_bin, "rm", name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    def _purge_stale_containers(self) -> None:
+        """Remove exited/dead review containers older than 24h (best effort).
+
+        Failed and timed-out runs keep their container for post-mortems, so
+        without this they would accumulate one NM-clone-sized layer per run.
+        """
+        try:
+            proc = subprocess.run(
+                [
+                    self._podman_bin,
+                    "ps",
+                    "-a",
+                    "--filter",
+                    "name=mr-review-",
+                    "--filter",
+                    "status=exited",
+                    "--filter",
+                    "status=dead",
+                    "--format",
+                    "{{.ID}} {{.CreatedAt}}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return
+        if proc.returncode != 0:
+            return
+        cutoff = time.time() - _STALE_CONTAINER_SECONDS
+        for line in proc.stdout.splitlines():
+            match = _CONTAINER_CREATED_RE.match(line)
+            if match is None:
+                continue
+            created = datetime.fromisoformat(
+                f"{match.group(2)} {match.group(3)}{match.group(4)[:3]}:{match.group(4)[3:]}"
+            ).timestamp()
+            if created < cutoff:
+                self._remove_container(match.group(1))
 
     def _run_streaming(
         self,
