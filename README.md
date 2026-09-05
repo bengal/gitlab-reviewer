@@ -33,6 +33,11 @@ Browser --HTTPS--> Web app container (FastAPI + Jinja/HTMX + APScheduler)
   APScheduler: an interval *queue pump* claims the lowest-position queued job
   (Postgres: `FOR UPDATE SKIP LOCKED`; SQLite: `BEGIN IMMEDIATE`) under a
   concurrency semaphore, and a nightly cron promotes the enrolled jobs.
+  At startup, runs/jobs left in `running`/`claimed` by a previous process
+  (restart, crash) are finalized — their container is stopped, the run is
+  marked `error`, the job `failed` — so a restart never leaves a phantom
+  running review in the UI (the queue page also offers a Cancel button for
+  in-flight reviews).
   Shared-password login → itsdangerous-signed session cookie.
 - **Orchestrator** — `podman run --rm` of a fixed, allowlisted review-runner
   image through the host's **rootless user podman socket** (never

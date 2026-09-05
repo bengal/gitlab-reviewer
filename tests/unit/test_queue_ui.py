@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db import get_settings_row
-from app.models import JobStatus, MergeRequest, ModelProfile, ScheduledJob, ScheduleType
+from app.models import JobStatus, MergeRequest, ModelProfile, ReviewRun, RunStatus, ScheduledJob, ScheduleType
 from app.security import decrypt_secret
 from app.services import scheduling
 
@@ -152,6 +152,44 @@ def test_queue_cancel_compacts(authed, db):
     assert db.get(ScheduledJob, b.id).status == JobStatus.cancelled.value
     assert rendered_queue(resp.text) == [(a.id, 1), (c.id, 2)]
     assert db_positions(db) == {a.id: 1, c.id: 2}
+
+
+def test_cancel_inflight_job_finalizes_run_and_job(authed, db, client):
+    """A claimed/running job can be cancelled from the UI: the container stop
+    is attempted, the run is finalized as error, the job as cancelled."""
+    stopped: list[int] = []
+
+    class _Stub:
+        def stop_run_container(self, run_id: int) -> None:
+            stopped.append(run_id)
+
+    client.app.state.orchestrator = _Stub()
+    profile = add_profile(db)
+    mr = add_mr(db, 7, "In flight")
+    job = queue_job(db, mr, profile)
+    job.status = JobStatus.running.value
+    db.commit()
+    run = ReviewRun(
+        scheduled_job_id=job.id,
+        merge_request_id=mr.id,
+        model_profile_id=profile.id,
+        status=RunStatus.running.value,
+        log="",
+    )
+    db.add(run)
+    db.commit()
+
+    resp = authed.post(f"/queue/{job.id}/cancel")
+
+    assert resp.status_code == 200
+    assert stopped == [run.id]
+    db.expire_all()
+    assert db.get(ScheduledJob, job.id).status == JobStatus.cancelled.value
+    assert run.status == RunStatus.error.value
+    assert run.error_message == "cancelled by user"
+    assert run.finished_at is not None
+    assert "Nothing running right now." in resp.text  # row left the Running section
+    assert "cancelled" in resp.text.lower()  # status message rendered
 
 
 def test_queue_move_top_and_bottom(authed, db):

@@ -19,6 +19,7 @@ import logging
 import re
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_settings_row
@@ -109,6 +110,43 @@ def execute_job(db: Session, run: ReviewRun, job: ScheduledJob) -> None:
         run.log = "\n".join(log_lines) + "\n"
 
     _apply_outcome(db, run, job, outcome, settings_row=settings_row, mr=mr)
+
+
+def cancel_inflight(db: Session, job: ScheduledJob) -> str:
+    """Cancel a claimed/running job: stop its container (best effort) and
+    finalize its in-flight run and the job row.
+
+    If the worker thread for this run is still alive in this process it will
+    shortly persist the container's own exit (an error, since we just stopped
+    it); both outcomes are terminal, so a cancel can never leave the job
+    stuck. Returns a short status line for the UI.
+    """
+    if job.status not in (JobStatus.claimed.value, JobStatus.running.value):
+        raise ValueError(f"job {job.id} is not in flight (status: {job.status})")
+    run = db.scalar(
+        select(ReviewRun)
+        .where(
+            ReviewRun.scheduled_job_id == job.id,
+            ReviewRun.status == RunStatus.running.value,
+        )
+        .order_by(ReviewRun.id.desc())
+        .limit(1)
+    )
+    if run is not None:
+        try:
+            get_app().state.orchestrator.stop_run_container(run.id)
+        except Exception:
+            log.exception("could not stop container for run %s on cancel", run.id)
+        run.status = RunStatus.error.value
+        run.error_message = "cancelled by user"
+        run.finished_at = _now()
+    job.status = JobStatus.cancelled.value
+    job.updated_at = _now()
+    db.commit()
+    compact_positions(db)
+    if run is not None:
+        return "Running review cancelled."
+    return "Job cancelled."
 
 
 def _apply_outcome(

@@ -560,6 +560,32 @@ def test_podman_failure_keeps_its_container(app, db, mr, profile, settings_row, 
     assert removed == []  # failed container kept for post-mortems
 
 
+def test_podman_stop_run_container_stops_by_name_prefix(app, monkeypatch):
+    orch = PodmanOrchestrator()
+    calls: list[list[str]] = []
+
+    def fake_popen(argv, **kwargs):
+        calls.append(list(argv))
+        return _FakeProc([], exit_code=0)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    orch.stop_run_container(13)
+
+    # name prefix locates the live container (run ids stay unambiguous via
+    # the trailing dash); exited/missing containers are a silent no-op
+    assert calls == [["podman", "stop", "mr-review-13-"]]
+
+
+def test_podman_stop_run_container_swallows_errors(app, monkeypatch):
+    orch = PodmanOrchestrator()
+
+    def fake_popen(argv, **kwargs):
+        raise FileNotFoundError("no podman")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    orch.stop_run_container(7)  # must not raise (recovery/cancel stay robust)
+
+
 def test_podman_purge_removes_only_stale_containers(app, db, mr, profile, settings_row, monkeypatch):
     from datetime import UTC, datetime, timedelta
 

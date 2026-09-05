@@ -1,6 +1,10 @@
 {# The three queue sections inside the #queue-page wrapper. Rendered by the
    full page (queue/list.html) and as the HTMX swap target for actions that
-   touch more than one section (e.g. nightly remove re-queues a job). #}
+   touch more than one section (e.g. nightly remove re-queues a job,
+   cancelling a running job empties the Running section). #}
+{% if message %}
+<p class="hint">{{ message }}</p>
+{% endif %}
 {% include "queue/partials/running.html" %}
 {% include "queue/partials/queue.html" %}
 {% include "queue/partials/nightly.html" %}

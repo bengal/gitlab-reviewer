@@ -51,6 +51,14 @@ class Orchestrator(Protocol):
         """
         ...
 
+    def stop_run_container(self, run_id: int) -> None:
+        """Best-effort stop of the live review container for ``run_id``.
+
+        Called by startup recovery and by user cancels. A no-op when nothing
+        is running (fake backend, container already exited, no podman).
+        """
+        ...
+
 
 def create_orchestrator(settings: Settings | None = None) -> Orchestrator:
     """Pick the orchestrator backend per config (M6 stores it on app.state)."""

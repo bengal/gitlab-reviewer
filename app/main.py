@@ -15,7 +15,7 @@ from app.deps import SESSION_COOKIE, decode_session, get_db, is_exempt_path, req
 from app.orchestrator import create_orchestrator
 from app.routers import archive, auth, mrs, queue, results
 from app.routers import settings as settings_router
-from app.scheduler import init_scheduler
+from app.scheduler import init_scheduler, recovery
 from app.scheduler.state import set_app
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -27,6 +27,9 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Finalize review runs/jobs orphaned in `running`/`claimed` by a
+        # previous process (restart, crash) before the pump starts again.
+        recovery.recover_orphans(app)
         scheduler = init_scheduler(app)
         if scheduler is not None:
             scheduler.start()

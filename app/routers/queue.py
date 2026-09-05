@@ -18,7 +18,7 @@ from app.db import get_settings_row
 from app.deps import get_db
 from app.models import JobStatus, MergeRequest, ModelProfile, ScheduledJob, ScheduleType
 from app.routers.mrs import detail_context
-from app.services import scheduling
+from app.services import review_service, scheduling
 
 router = APIRouter()
 
@@ -57,10 +57,10 @@ def _render_page(request: Request, db: Session, message: str | None = None) -> H
     )
 
 
-def _render_sections(request: Request, db: Session) -> HTMLResponse:
+def _render_sections(request: Request, db: Session, message: str | None = None) -> HTMLResponse:
     """All three sections inside the #queue-page wrapper (swap target)."""
     return _templates(request).TemplateResponse(
-        request, "queue/partials/sections.html", _queue_context(db)
+        request, "queue/partials/sections.html", {"message": message, **_queue_context(db)}
     )
 
 
@@ -99,6 +99,14 @@ def queue_cancel(request: Request, job_id: int, db: Session = Depends(get_db)) -
     job = db.get(ScheduledJob, job_id)
     if job is None:
         return _render_queue_section(request, db, message=f"No job with id {job_id}.")
+    if job.status in (JobStatus.claimed.value, JobStatus.running.value):
+        # In flight: stop the container and finalize the run/job. The job
+        # leaves the Running section, so the swap target is the whole page.
+        try:
+            message = review_service.cancel_inflight(db, job)
+        except ValueError as exc:
+            message = f"Cancel failed: {exc}"
+        return _render_sections(request, db, message=message)
     try:
         scheduling.cancel(db, job)
     except ValueError as exc:

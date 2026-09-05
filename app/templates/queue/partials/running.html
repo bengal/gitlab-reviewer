@@ -1,5 +1,6 @@
-{# Jobs in flight (claimed/running). Read-only here; the pump that fills this
-   section lands in milestone 6. #}
+{# Jobs in flight (claimed/running). The Cancel button stops the container
+   and finalizes the run/job (review_service.cancel_inflight); a re-render of
+   the whole #queue-page follows because the row leaves this section. #}
 <section class="card" id="running-section">
   <h2>Running <span class="hint">({{ running|length }})</span></h2>
   {% if running %}
@@ -11,6 +12,11 @@
         <a href="/mrs/{{ mr.iid }}">!{{ mr.iid }}</a> {{ mr.title }}
       </span>
       <span class="queue-model">{{ profile.name }}</span>
+      <span class="queue-actions">
+        <button type="button" class="btn small danger" hx-post="/queue/{{ job.id }}/cancel"
+                hx-target="#queue-page" hx-swap="outerHTML"
+                hx-confirm="Cancel this running review?">Cancel</button>
+      </span>
     </li>
     {% endfor %}
   </ul>

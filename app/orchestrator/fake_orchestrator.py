@@ -82,6 +82,9 @@ class FakeOrchestrator:
             delay=delay,
         )
 
+    def stop_run_container(self, run_id: int) -> None:
+        """No-op: the fake backend runs in-process and has no containers."""
+
     def run_review(
         self,
         run,

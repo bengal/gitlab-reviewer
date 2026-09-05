@@ -211,6 +211,26 @@ class PodmanOrchestrator:
             timed_out=timed_out,
         )
 
+    def stop_run_container(self, run_id: int) -> None:
+        """Best-effort ``podman stop`` for the live container of ``run_id``.
+
+        A run's container is named ``mr-review-<run id>-<token>`` and its id
+        is only persisted after the run finishes, so the live one is located
+        by name prefix (the trailing dash keeps run ids unambiguous). An
+        exited or missing container is a no-op; errors are swallowed so a
+        dead podman socket can never break recovery or a cancel.
+        """
+        try:
+            subprocess.run(
+                [self._podman_bin, "stop", f"mr-review-{run_id}-"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
     def _remove_container(self, name: str) -> None:
         """Best-effort ``podman rm`` for an exited review container."""
         try:
