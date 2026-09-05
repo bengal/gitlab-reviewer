@@ -10,21 +10,22 @@
 # OPENCODE_ASSET_URL (the `opencode --version` smoke test will fail the
 # build on a wrong URL).
 #
-# Release assets are zips containing a single `opencode` binary at the root
-# (verified for v0.6.5). For CPUs without recent x86 extensions use
-# opencode-linux-x64-baseline.zip instead.
+# v1.x release assets are tarballs containing a single `opencode` binary at
+# the root (verified for v1.18.29; older v0.x assets were zips). For CPUs
+# without recent x86 extensions use opencode-linux-x64-baseline.tar.gz.
 FROM python:3.12-slim
 
-ARG OPENCODE_VERSION=0.6.5
-ARG OPENCODE_ASSET_URL=https://github.com/sst/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.zip
+ARG OPENCODE_VERSION=1.18.29
+ARG OPENCODE_ASSET_URL=https://github.com/sst/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL -o /tmp/opencode.zip "${OPENCODE_ASSET_URL}" \
-    && python3 -m zipfile -e /tmp/opencode.zip /tmp/opencode-x/ \
+    && curl -fsSL -o /tmp/opencode.tar.gz "${OPENCODE_ASSET_URL}" \
+    && mkdir -p /tmp/opencode-x \
+    && tar -xzf /tmp/opencode.tar.gz -C /tmp/opencode-x/ \
     && install -m 0755 /tmp/opencode-x/opencode /usr/local/bin/opencode \
-    && rm -rf /tmp/opencode.zip /tmp/opencode-x \
+    && rm -rf /tmp/opencode.tar.gz /tmp/opencode-x \
     && opencode --version
 
 # Non-root user; /work is the per-run workspace, /out is the bind mount the
