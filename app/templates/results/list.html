@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Results — GitLab MR Review{% endblock %}
+
+{% block content %}
+<h1>Review results</h1>
+<form class="filter-form" method="get" action="/results">
+  <label>Status
+    <select name="status">
+      <option value="all"{% if status == "all" %} selected{% endif %}>All</option>
+      {% for s in status_choices %}
+      <option value="{{ s }}"{% if status == s %} selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Archive state
+    <select name="archive">
+      <option value="current"{% if archive_filter == "current" %} selected{% endif %}>Current (not archived)</option>
+      <option value="all"{% if archive_filter == "all" %} selected{% endif %}>All</option>
+    </select>
+  </label>
+  <button type="submit" class="btn">Filter</button>
+</form>
+{% include "results/partials/table.html" %}
+{% endblock %}

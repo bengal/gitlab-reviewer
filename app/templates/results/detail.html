@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block title %}Run #{{ run.id }} — GitLab MR Review{% endblock %}
+
+{% block content %}
+<h1>
+  Run #{{ run.id }} —
+  {% if mr and mr.web_url %}
+  <a href="{{ mr.web_url }}" target="_blank" rel="noopener">!{{ mr.iid }}: {{ mr.title }}</a>
+  {% elif mr %}
+  !{{ mr.iid }}: {{ mr.title }}
+  {% else %}
+  (merge request no longer cached)
+  {% endif %}
+</h1>
+{% include "results/partials/detail.html" %}
+{% endblock %}

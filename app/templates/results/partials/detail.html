@@ -1,0 +1,92 @@
+{# Detail body partial: shared by /results/{id} (results/detail.html) and
+   the read-only /archive/{id} (archive/detail.html). Context: run, mr,
+   profile, result (parsed ReviewResult or None), result_markdown (exact
+   post-back markdown), severity_sections, finding_ref, read_only, message. #}
+{% if message %}
+<p class="hint">{{ message }}</p>
+{% endif %}
+<div class="banner status-{{ run.status }}">{{ run.status }}</div>
+{% if read_only %}
+<p class="hint">Read-only archived view — <a href="/results/{{ run.id }}">open in Results</a>.</p>
+{% endif %}
+<dl class="mr-detail run-meta">
+  <dt>Model</dt>
+  <dd>{{ profile.name if profile else "unknown" }}</dd>
+  <dt>Started</dt>
+  <dd>{{ run.started_at or "unknown" }}</dd>
+  <dt>Finished</dt>
+  <dd>{{ run.finished_at or "in progress" }}</dd>
+  <dt>Exit code</dt>
+  <dd>{{ run.exit_code if run.exit_code is not none else "—" }}</dd>
+  <dt>Container</dt>
+  <dd>{% if run.container_id %}<code>{{ run.container_id }}</code>{% else %}—{% endif %}</dd>
+  <dt>GitLab note</dt>
+  <dd>
+    {% if run.gitlab_note_id and mr and mr.web_url %}
+    <a href="{{ mr.web_url }}#note_{{ run.gitlab_note_id }}" target="_blank" rel="noopener">note {{ run.gitlab_note_id }}</a>
+    {% elif run.gitlab_note_id %}
+    note {{ run.gitlab_note_id }}
+    {% else %}—{% endif %}
+  </dd>
+  {% if run.archived_at %}
+  <dt>Archived</dt>
+  <dd>{{ run.archived_at }}</dd>
+  {% endif %}
+</dl>
+<section class="card">
+  <h2>Review result</h2>
+  {% if result %}
+    {% if result.summary %}
+    <p class="result-summary">{{ result.summary }}</p>
+    {% endif %}
+    {% for key, title in severity_sections %}
+      {% set findings = result.findings[key] %}
+      {% if findings %}
+        {% include "results/partials/bucket.html" %}
+      {% endif %}
+    {% endfor %}
+    {% if result.commit_message_review %}
+    <h3>Commit Message Review</h3>
+    <p class="result-cmr">{{ result.commit_message_review }}</p>
+    {% endif %}
+    {% if result.questions %}
+    <h3>Questions</h3>
+    <ol class="result-questions">
+      {% for q in result.questions %}
+      <li>{{ q }}</li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+  {% elif run.status == "running" %}
+    <p class="hint">Review still running — no output captured yet.</p>
+  {% elif run.result_markdown %}
+    <pre class="result-raw">{{ run.result_markdown }}</pre>
+  {% elif run.error_message %}
+    <p class="error">{{ run.error_message }}</p>
+  {% else %}
+    <p class="hint">No review output was captured for this run.</p>
+  {% endif %}
+  {% if run.error_message %}
+  <p class="error">Error: {{ run.error_message }}</p>
+  {% endif %}
+  {% if result or run.result_markdown %}
+  <details>
+    <summary>Rendered markdown (as posted to GitLab)</summary>
+    <pre class="result-raw">{{ result_markdown }}</pre>
+  </details>
+  {% endif %}
+</section>
+<section class="card">
+  <h2>Log</h2>
+  <details>
+    <summary>Full log</summary>
+    <pre class="run-log">{{ run.log or "(no log captured)" }}</pre>
+  </details>
+</section>
+{% if not read_only and run.archived_at is none %}
+<form class="archive-form" method="post" action="/results/{{ run.id }}/archive">
+  <button type="submit" class="btn">Archive</button>
+</form>
+{% elif run.archived_at %}
+<p class="hint">This run is archived — see it in the <a href="/archive">Archive</a>.</p>
+{% endif %}

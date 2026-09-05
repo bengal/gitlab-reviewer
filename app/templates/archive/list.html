@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+
+{% block title %}Archive — GitLab MR Review{% endblock %}
+
+{% block content %}
+<h1>Archived results</h1>
+<p class="hint">Archived runs are kept for reference; they are read-only from here.</p>
+{% include "results/partials/table.html" %}
+{% endblock %}

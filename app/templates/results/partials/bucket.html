@@ -1,0 +1,13 @@
+{# One severity bucket. Context (from the detail partial): key, title,
+   findings (list of Finding), finding_ref (callable). #}
+<section class="bucket bucket-{{ key }}">
+  <h3>{{ title }}</h3>
+  <ul class="findings">
+    {% for f in findings %}
+    <li>
+      {% set ref = finding_ref(f) %}
+      {% if ref %}<code class="finding-ref">{{ ref }}</code> {% endif %}{{ f.description }}
+    </li>
+    {% endfor %}
+  </ul>
+</section>

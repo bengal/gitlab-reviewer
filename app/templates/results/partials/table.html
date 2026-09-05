@@ -1,0 +1,34 @@
+{# Runs table partial: shared by /results and /archive. Rows are
+   (run, mr, profile) tuples; link_prefix selects the detail route
+   ("/results/" or "/archive/"). #}
+{% if runs %}
+<table class="mr-table runs-table">
+  <thead>
+    <tr>
+      <th>MR</th>
+      <th>Model</th>
+      <th>Status</th>
+      <th>Started</th>
+      <th>Finished</th>
+      <th>Archived</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for run, mr, profile in runs %}
+    <tr>
+      <td>
+        <a href="{{ link_prefix }}{{ run.id }}">!{{ mr.iid }}</a>
+        <a href="{{ link_prefix }}{{ run.id }}">{{ mr.title }}</a>
+      </td>
+      <td>{{ profile.name if profile else "unknown" }}</td>
+      <td class="run-status status-{{ run.status }}">{{ run.status }}</td>
+      <td>{{ run.started_at or "—" }}</td>
+      <td>{{ run.finished_at or "in progress" }}</td>
+      <td>{{ run.archived_at or "" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="hint">{{ empty_hint }}</p>
+{% endif %}

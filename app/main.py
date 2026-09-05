@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.db import get_settings_row, init_db
 from app.deps import SESSION_COOKIE, decode_session, get_db, is_exempt_path, require_auth
 from app.orchestrator import create_orchestrator
-from app.routers import auth, mrs, queue
+from app.routers import archive, auth, mrs, queue, results
 from app.routers import settings as settings_router
 from app.scheduler import init_scheduler
 from app.scheduler.state import set_app
@@ -87,6 +87,8 @@ def create_app() -> FastAPI:
     app.include_router(mrs.router)
     app.include_router(queue.router)
     app.include_router(settings_router.router)
+    app.include_router(results.router)
+    app.include_router(archive.router)
 
     return app
 

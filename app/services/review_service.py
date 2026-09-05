@@ -1,4 +1,4 @@
-"""Execute one claimed review job (PLAN steps 6-8, M6a).
+"""Execute one claimed review job (PLAN steps 6-8, M6a/M6b).
 
 ``execute_job`` is called by the worker thread with a session plus the
 ``review_run`` and ``scheduled_job`` rows. It builds the container env via
@@ -7,8 +7,12 @@
 secrets (the env's secret values) before appending to ``run.log``, maps the
 ``RunOutcome`` onto the run's final state, and finalizes the job.
 
-The GitLab post-back (PLAN step 7) is deliberately NOT implemented here —
-see the clearly marked hook point in ``execute_job`` (M6b).
+GitLab post-back (PLAN step 7, M6b): when the run succeeded and the job's
+``post_to_gitlab`` flag (falling back to ``settings.post_results_to_gitlab``
+when the flag is None) is true, the rendered review is posted as an MR note
+via ``GitLabClient.post_note`` and the returned note id is stored on
+``run.gitlab_note_id`` in the same transaction as the outcome. A failed
+post is logged and appended to ``run.log`` but never fails the run.
 """
 
 import logging
@@ -22,6 +26,8 @@ from app.models import JobStatus, MergeRequest, ModelProfile, ReviewRun, RunStat
 from app.orchestrator import RunOutcome
 from app.orchestrator.run_review import build_env, scrub_secrets, secret_env_values
 from app.scheduler.state import get_app
+from app.services.gitlab_client import GitLabClient
+from app.services.result_render import render_result_markdown
 from app.services.scheduling import compact_positions
 
 log = logging.getLogger(__name__)
@@ -69,6 +75,8 @@ def execute_job(db: Session, run: ReviewRun, job: ScheduledJob) -> None:
             run,
             job,
             RunOutcome(exit_code=1, error="merge request or model profile missing"),
+            settings_row=settings_row,
+            mr=None,
         )
         return
 
@@ -97,10 +105,18 @@ def execute_job(db: Session, run: ReviewRun, job: ScheduledJob) -> None:
     if log_lines:
         run.log = "\n".join(log_lines) + "\n"
 
-    _apply_outcome(db, run, job, outcome)
+    _apply_outcome(db, run, job, outcome, settings_row=settings_row, mr=mr)
 
 
-def _apply_outcome(db: Session, run: ReviewRun, job: ScheduledJob, outcome: RunOutcome) -> None:
+def _apply_outcome(
+    db: Session,
+    run: ReviewRun,
+    job: ScheduledJob,
+    outcome: RunOutcome,
+    *,
+    settings_row,
+    mr: MergeRequest | None,
+) -> None:
     """Map a RunOutcome onto the run/job rows and commit."""
     if outcome.timed_out:
         status = RunStatus.timeout.value
@@ -120,15 +136,45 @@ def _apply_outcome(db: Session, run: ReviewRun, job: ScheduledJob, outcome: RunO
     job.status = JobStatus.done.value if status == RunStatus.success.value else JobStatus.failed.value
     job.updated_at = run.finished_at
 
-    # ------------------------------------------------------------------
-    # GITLAB POST-BACK HOOK POINT (M6b — implement here, before the commit
-    # below so the note id lands in the same transaction):
-    # when `job.post_to_gitlab` is not None, else
-    # `settings_row.post_results_to_gitlab` — render the outcome
-    # (result_json or result_markdown) into markdown, post it as an MR note
-    # via gitlab_client.post_note, and store the returned id on
-    # `run.gitlab_note_id`. A failed post must log, not fail the run.
-    # ------------------------------------------------------------------
+    # GitLab post-back (PLAN step 7): optional and best-effort — it happens
+    # before the commit so the note id lands in the same transaction as the
+    # outcome.
+    if status == RunStatus.success.value:
+        post = (
+            job.post_to_gitlab
+            if job.post_to_gitlab is not None
+            else settings_row.post_results_to_gitlab
+        )
+        if post:
+            _post_to_gitlab(run, outcome, settings_row, mr)
 
     db.commit()
     compact_positions(db)
+
+
+def _post_to_gitlab(run: ReviewRun, outcome: RunOutcome, settings_row, mr) -> None:
+    """Post the rendered review as an MR note and store the note id on the run.
+
+    Any failure (GitLab not configured, HTTP error, ...) is logged and
+    appended to ``run.log`` — it must never fail a run that succeeded. The
+    mutated run row is committed by the caller's ``db.commit()``.
+    """
+    if mr is None:
+        log.error("run %s: cannot post to GitLab (merge request row missing)", run.id)
+        run.log = _append_log(run.log, "GitLab post-back skipped: merge request row missing")
+        return
+    body = render_result_markdown(outcome.result_json, outcome.result_markdown, run)
+    try:
+        note_id = GitLabClient(settings_row).post_note(mr.iid, body)
+    except Exception as exc:
+        log.exception("run %s: GitLab post-back failed for !%s", run.id, mr.iid)
+        run.log = _append_log(run.log, f"GitLab post-back failed: {exc}")
+        return
+    run.gitlab_note_id = note_id
+    run.log = _append_log(run.log, f"Posted review to GitLab !{mr.iid} as note {note_id}")
+
+
+def _append_log(log_text: str | None, line: str) -> str:
+    """Append one line to the run log, keeping it newline-terminated."""
+    base = (log_text or "").rstrip("\n")
+    return f"{base}\n{line}\n" if base else f"{line}\n"

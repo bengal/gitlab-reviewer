@@ -314,3 +314,109 @@ label.check input[type="checkbox"] {
   grid-template-columns: 1fr 1fr;
   gap: 0 1rem;
 }
+
+/* -- Results & archive ------------------------------------------------------ */
+
+.banner {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  margin: 0.5rem 0;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: #fff;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.status-running {
+  color: #0969da;
+  border-color: #0969da;
+}
+
+.status-success {
+  color: #1a7f37;
+  border-color: #1a7f37;
+}
+
+.status-error {
+  color: #cf222e;
+  border-color: #cf222e;
+}
+
+.status-timeout {
+  color: #9a6700;
+  border-color: #9a6700;
+}
+
+.run-status {
+  font-weight: 600;
+}
+
+.filter-form {
+  display: flex;
+  gap: 1rem;
+  align-items: end;
+  margin: 1rem 0;
+}
+
+.filter-form label {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #57606a;
+}
+
+.filter-form select {
+  margin-top: 0.25rem;
+}
+
+.filter-form .btn {
+  margin-top: 0;
+}
+
+.bucket h3 {
+  margin-bottom: 0.25rem;
+}
+
+.bucket-critical h3 {
+  color: #cf222e;
+}
+
+.bucket-important h3 {
+  color: #9a6700;
+}
+
+.bucket-minor h3 {
+  color: #57606a;
+}
+
+.bucket-positive h3 {
+  color: #1a7f37;
+}
+
+ul.findings {
+  margin: 0.25rem 0 0.75rem;
+  padding-left: 1.2rem;
+}
+
+.finding-ref {
+  color: #57606a;
+}
+
+.result-raw,
+.run-log {
+  margin: 0.25rem 0 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #f6f8fa;
+  font-size: 0.85rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+details summary {
+  margin: 0.5rem 0;
+  color: #0969da;
+  cursor: pointer;
+}

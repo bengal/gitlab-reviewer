@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+
+{% block title %}Run #{{ run_id }} not found — GitLab MR Review{% endblock %}
+
+{% block content %}
+<h1>Run #{{ run_id }} not found</h1>
+<p class="hint">No review run with that id. Go back to the <a href="/results">results</a>.</p>
+{% endblock %}
