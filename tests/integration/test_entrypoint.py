@@ -8,7 +8,9 @@ a) fake opencode prints a fenced JSON block -> result.json written + parsed,
    review.log written, exit 0;
 b) fake opencode prints prose only -> result.md fallback, exit 0;
 c) fake opencode sleeps past a tiny REVIEW_TIMEOUT_SECONDS -> exit 124 and a
-   partial log.
+   partial log;
+d) fake opencode exits 1 after dropping a session log file -> the tail of
+   that log is appended (scrubbed) to review.log, exit 1.
 """
 
 import json
@@ -132,6 +134,14 @@ def fake_opencode(tmp_path):
         "  leak)\n"
         '    echo "git: authenticated with password=${GITLAB_TOKEN}"\n'
         '    echo "The model output echoes ${GITLAB_TOKEN} in prose."\n'
+        "    ;;\n"
+        "  fail)\n"
+        '    logdir="$HOME/.local/share/opencode/log"\n'
+        '    mkdir -p "$logdir"\n'
+        '    echo "session start" > "$logdir/2026-01-01T000000.log"\n'
+        '    echo "Error: boom with secret=${GITLAB_TOKEN}" >> "$logdir/2026-01-01T000000.log"\n'
+        '    echo "Error: Unexpected error, check log file at $logdir/2026-01-01T000000.log"\n'
+        "    exit 1\n"
         "    ;;\n"
         "esac\n",
         encoding="utf-8",
@@ -283,3 +293,21 @@ def test_entrypoint_timeout(tmp_path, gitlab, fake_opencode):
     assert log_text.rstrip("\n").endswith("EXIT=124")
     assert not (out_dir / "result.json").exists()
     assert not (out_dir / "result.md").exists()
+
+
+def test_entrypoint_opencode_failure_appends_session_log_tail(tmp_path, gitlab, fake_opencode):
+    """opencode's 'Unexpected error' points at a log file inside the
+    container; its tail must land in review.log (scrubbed) so the failure is
+    diagnosable after the container is gone."""
+    proc = _run_entrypoint(tmp_path, gitlab, fake_opencode, "fail")
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+
+    log_text = (tmp_path / "out" / "review.log").read_text(encoding="utf-8")
+    assert "opencode exited with code 1" in log_text
+    assert "opencode session log tail" in log_text
+    assert "Error: boom with secret=" in log_text
+    assert FAKE_TOKEN not in log_text  # session-log lines are scrubbed too
+    assert "***" in log_text
+    assert log_text.rstrip("\n").endswith("EXIT=1")
+    # stdout carries the same scrubbed content
+    assert FAKE_TOKEN not in proc.stdout

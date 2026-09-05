@@ -17,7 +17,10 @@ Implements the MILESTONES.md "Milestone 5" entrypoint steps exactly:
 6. run ``opencode run -m <provider>/<model> "<prompt>"`` with
    ``cwd=/work/target``, ``OPENCODE_CONFIG`` pointing at the rendered json,
    ``subprocess.run(timeout=REVIEW_TIMEOUT_SECONDS)``, capturing all output
-   to LOG_PATH (default ``/out/review.log``);
+   to LOG_PATH (default ``/out/review.log``); when opencode exits non-zero
+   (not a timeout), the tail of its own session log — the file its
+   "Unexpected error" message points at — is appended to LOG_PATH so the
+   failure stays diagnosable after the container goes away;
 7. extract the LAST fenced ```json block from the output into RESULT_PATH
    (default ``/out/result.json``) after validating it against the
    result_json schema; on parse failure write the raw output to
@@ -42,6 +45,13 @@ from string import Template
 LOG_PATH = Path(os.environ.get("LOG_PATH", "/out/review.log"))
 RESULT_PATH = Path(os.environ.get("RESULT_PATH", "/out/result.json"))
 RESULT_MD_PATH = RESULT_PATH.with_name("result.md")
+# opencode's own session logs (where its "Unexpected error" message points).
+# Overridable so the entrypoint can be tested; defaults to the location
+# opencode uses under $HOME inside the container.
+OPENCODE_LOG_DIR = Path(
+    os.environ.get("OPENCODE_LOG_DIR") or Path.home() / ".local" / "share" / "opencode" / "log"
+)
+_CRASH_LOG_TAIL_BYTES = 40_000
 # WORK_DIR/OPENCODE_TEMPLATE are overridable so the entrypoint can be tested
 # outside the container; in production they are /work and /opencode.json.j2.
 WORK_DIR = Path(os.environ.get("WORK_DIR", "/work"))
@@ -286,6 +296,38 @@ def _build_prompt() -> str:
     return f"{os.environ['REVIEW_PROMPT'].rstrip()}\n\n{diff_instructions}"
 
 
+def log_opencode_crash_log() -> None:
+    """Append the tail of opencode's latest session log to the review log.
+
+    opencode's "Unexpected error" only points at a log file inside the
+    container; mirroring its tail here keeps the failure diagnosable from
+    the app's stored run log (and from the kept container). Lines go
+    through ``log()``, so run secrets are scrubbed. No-op when opencode
+    left no log behind.
+    """
+    try:
+        latest = max(OPENCODE_LOG_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, default=None)
+    except OSError:
+        return
+    if latest is None:
+        return
+    try:
+        with latest.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - _CRASH_LOG_TAIL_BYTES))
+            tail = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return
+    lines = tail.splitlines()
+    if lines and lines[0] and size > _CRASH_LOG_TAIL_BYTES:
+        lines = lines[1:]  # drop the partial first line cut off by the seek
+    if lines:
+        log(f"opencode session log tail ({latest.name}):")
+        for line in lines:
+            log(line)
+
+
 def _run_opencode(prompt: str, config_path: Path, timeout: float) -> tuple[int, str]:
     """Run opencode headless; return (exit_code, full output). 124 = timeout
     (the child is killed by subprocess.run; any partial output is kept)."""
@@ -404,6 +446,7 @@ def run() -> int:
         log(output.rstrip("\n"))
     if exit_code not in (0, 124):
         log(f"opencode exited with code {exit_code}")
+        log_opencode_crash_log()
 
     result = _extract_result(output)
     if result is not None:
