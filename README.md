@@ -71,17 +71,26 @@ Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
 
 ```sh
 uv sync
-uv run alembic upgrade head        # creates ./dev.sqlite3
 cp .env.example .env
 ```
 
-Generate the two mandatory secrets and put them in `.env`:
+Fill in the three required secrets in `.env` (full reference in
+[Configuration](#configuration-env) below):
 
 ```sh
-# shared app password -> PBKDF2 hash
+# 1. Shared app password -> PBKDF2 hash  (APP_PASSWORD_HASH)
 uv run python -c "from app.security import hash_password; print(hash_password('your-password'))"
-# Fernet key (secrets at rest: GitLab token, model API keys)
-uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# 2. Session cookie signing key          (SESSION_SECRET)
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+# 3. Key for encrypting secrets at rest  (SECRET_ENC_KEY)
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Create the database (SQLite is the default — zero setup, see
+[Database](#database-sqlite-or-postgres) for Postgres):
+
+```sh
+uv run alembic upgrade head        # creates ./dev.sqlite3
 ```
 
 Run the app:
@@ -90,11 +99,108 @@ Run the app:
 uv run uvicorn --factory app.main:create_app --reload --port 8000
 ```
 
-Open http://127.0.0.1:8000, log in with your password, configure your GitLab
-instance under **Settings** (URL, project, token — "Test connection"), add a
-model profile, and hit **Refresh** on the MR page. With `ORCHESTRATOR=fake`
-in `.env`, reviews run through a canned in-process backend (no podman
-needed).
+Open http://127.0.0.1:8000 and do the one-time UI setup:
+
+1. **Log in** with the password from step 1.
+2. **Settings → GitLab**: instance URL (e.g. `https://gitlab.com`), project
+   (`group/name` or numeric id), a project **read/write** token →
+   **Test connection**.
+3. **Settings → Model profiles**: add one per model you want to offer —
+   e.g. `anthropic` provider + `claude-...` model id, or `local` provider +
+   your `llama-server` model id with `base_url` = `LLAMA_BASE_URL` from
+   `.env`. Mark one as default.
+4. **MRs → Refresh** to load open MRs, then *Schedule review* on one.
+
+> Tip: for the very first pass set `ORCHESTRATOR=fake` in `.env` — reviews
+> run through a canned in-process backend, so you can try the whole UI
+> (queue, reorder, results, archive) without podman or any model. Switch to
+> `ORCHESTRATOR=podman` when you are ready for real reviews.
+
+## Database: SQLite or Postgres?
+
+The schema is identical either way (managed by Alembic); `DATABASE_URL` in
+`.env` is the only difference.
+
+| | **SQLite** (default) | **Postgres** |
+|---|---|---|
+| Use when | local development, single machine, single user | real deployment; app running in a container; concurrent users |
+| Setup | none — the file is created automatically | a running Postgres (see below) |
+| Notes | stored in `./dev.sqlite3` next to the repo; single-writer, which is fine for one app instance | the compose deployment ships a `postgres` service out of the box |
+
+**SQLite.** Nothing to do: the default `DATABASE_URL=sqlite:///./dev.sqlite3`
+points at a file relative to where you start the app (run from the repo
+root). `uv run alembic upgrade head` creates it — or simply starting the app
+does, since a fresh database is provisioned automatically at boot. Use an
+absolute path (`sqlite:////home/you/work/gitlab/dev.sqlite3`) if the app is
+started from different directories.
+
+**Postgres.** The `psycopg` driver is already a project dependency.
+
+- *Deployment (recommended):* use the compose file — it runs a `postgres`
+  service on the internal network and the app's `DATABASE_URL` defaults to
+  `postgresql+psycopg://mrreview:mrreview@postgres:5432/mrreview` (override
+  via `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` + `DATABASE_URL` in
+  `.env` if you want different credentials). Migrations run automatically at
+  container start.
+- *Local dev against a real Postgres:* run one ad hoc, e.g.
+
+  ```sh
+  podman run -d --name mrreview-pg \
+    -e POSTGRES_USER=mrreview -e POSTGRES_PASSWORD=mrreview -e POSTGRES_DB=mrreview \
+    -p 127.0.0.1:5432:5432 docker.io/library/postgres:16-alpine
+  ```
+
+  then set in `.env`:
+
+  ```
+  DATABASE_URL=postgresql+psycopg://mrreview:mrreview@127.0.0.1:5432/mrreview
+  ```
+
+  and run `uv run alembic upgrade head` once. (If the app is containerized,
+  point the host at the container's published port as above; inside the
+  compose network use the service name `postgres` instead of
+  `127.0.0.1`.)
+
+## Configuration (.env)
+
+Copy `.env.example` to `.env` (git-ignored). The file is read from the
+directory you start the app in, and real environment variables always
+override it.
+
+### Required
+
+| Variable | What to put |
+|---|---|
+| `APP_PASSWORD_HASH` | PBKDF2 hash of the shared login password — run the `hash_password('your-password')` one-liner above. Without it, nobody can log in. |
+| `SESSION_SECRET` | Any long random string: `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Signs the session cookie; change it to log everyone out. |
+| `SECRET_ENC_KEY` | Fernet key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Encrypts the GitLab token and model API keys stored in the DB. **Keep it safe** — if lost, the stored secrets become unreadable (re-enter them in Settings; the rest of the DB is unaffected). |
+
+### Database
+
+| Variable | What to put |
+|---|---|
+| `DATABASE_URL` | `sqlite:///./dev.sqlite3` (default, relative) or `postgresql+psycopg://user:pass@host:5432/dbname` — see [Database](#database-sqlite-or-postgres). |
+
+### Models & review engine
+
+| Variable | Default | What to put |
+|---|---|---|
+| `ORCHESTRATOR` | `podman` | `podman` for real ephemeral review containers, `fake` for the canned in-process backend (first-run/CI). |
+| `REVIEW_IMAGE` | `gitlab-mr-review/review-runner:latest` | The review-runner image the app `podman run`s. Pre-build it: `podman build -t gitlab-mr-review/review-runner:latest containers/review-runner/`. |
+| `REVIEW_IMAGE_ALLOWLIST` | *(empty)* | Comma-separated image names/prefixes the orchestrator may run (a prefix allows any tag, e.g. `gitlab-mr-review/review-runner`). Empty = only `REVIEW_IMAGE` itself; anything else is refused. |
+| `LLAMA_BASE_URL` | *(empty)* | Base URL of your shared llama.cpp server (OpenAI-compatible `/v1`), e.g. `http://127.0.0.1:8080` on the host. Used as the fallback `base_url` for `local` model profiles. In compose this is set to `http://llama-server:8080` automatically. |
+| `ANTHROPIC_API_KEY` | *(empty)* | Optional fallback key for `anthropic` profiles; keys can also be stored per profile in the UI (encrypted at rest). |
+| `REVIEW_TIMEOUT_SECONDS` | `1800` | Hard per-review timeout (30 min). Exceeded runs are marked `timeout`. |
+| `PODMAN_NETWORK` | `host` | Network the review containers join: `host` for dev (reaches GitLab + llama-server directly), `mrreview` in the compose deployment (reaches `llama-server` via the internal network). |
+| `DISABLE_SCHEDULER` | `0` | `1` = no background queue pump / nightly cron (tests, or when you want to pump manually). |
+
+### Deployment-only (consumed by compose/quadlet, not the app)
+
+| Variable | Default | What to put |
+|---|---|---|
+| `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Host path of your **rootless user** podman socket (the app container mounts it to spawn review containers). Enable it first: `systemctl --user enable --now podman.socket`. Must be owned by the uid the app runs as (1000 in the image). |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `mrreview` / `mrreview` / `mrreview` | Credentials for the compose `postgres` service; keep them in sync with `DATABASE_URL`. |
+| `LLAMA_MODEL_DIR` / `LLAMA_MODEL_FILE` | `./models` / `model.gguf` | Host directory with the model file(s) and the file to load, mounted into `llama-server`. |
 
 ## Deployment
 
@@ -111,7 +217,7 @@ podman build -t gitlab-mr-review/review-runner:latest containers/review-runner/
 ### podman compose
 
 ```sh
-cp .env.example .env    # fill in SESSION_SECRET, APP_PASSWORD_HASH, SECRET_ENC_KEY, ...
+cp .env.example .env    # fill in SESSION_SECRET, APP_PASSWORD_HASH, SECRET_ENC_KEY (see Configuration)
 podman compose -f deploy/compose.yaml up -d
 ```
 
