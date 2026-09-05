@@ -24,6 +24,7 @@ ENTRYPOINT = REPO_ROOT / "containers/review-runner/entrypoint.py"
 
 SOURCE_BRANCH = "feature-1"
 TARGET_BRANCH = "main"
+MR_IID = "7"
 FAKE_TOKEN = "glpat-faketoken123456789"
 PROMPT = "Review the MR diff for correctness and security."
 
@@ -33,15 +34,19 @@ def _git(args: list[str], cwd: Path) -> str:
     return proc.stdout
 
 
-@pytest.fixture()
-def gitlab(tmp_path):
-    """A local stand-in for a GitLab instance: a bare repo at <root>/proj.git
-    with two commits — one on main, one on the source branch feature-1."""
-    gitlab_root = tmp_path / "gitlab"
+def _make_remote(tmp_path, root_name, *, with_source_branch=True) -> dict:
+    """A local stand-in for a GitLab instance: a bare repo at
+    <root>/proj.git with two commits — one on main, one on the source branch
+    feature-1, plus the MR head ref (as GitLab keeps on the target project's
+    remote). With ``with_source_branch=False`` the source branch is absent
+    from the remote, mimicking a fork MR."""
+    gitlab_root = tmp_path / root_name
     gitlab_root.mkdir()
-    _git(["init", "--bare", str(gitlab_root / "proj.git")], cwd=gitlab_root)
+    bare = gitlab_root / "proj.git"
+    _git(["init", "--bare", str(bare)], cwd=gitlab_root)
+    _git(["symbolic-ref", "HEAD", f"refs/heads/{TARGET_BRANCH}"], cwd=bare)
 
-    work = tmp_path / "push"
+    work = gitlab_root / "push"
     work.mkdir()
     _git(["init", "-b", TARGET_BRANCH, str(work)], cwd=work)
     _git(["config", "user.email", "reviewer@example.com"], cwd=work)
@@ -56,14 +61,23 @@ def gitlab(tmp_path):
     _git(["commit", "-m", "second commit"], cwd=work)
     head_sha = _git(["rev-parse", "HEAD"], cwd=work).strip()
 
-    _git(["remote", "add", "origin", str(gitlab_root / "proj.git")], cwd=work)
-    _git(["push", "origin", TARGET_BRANCH, SOURCE_BRANCH], cwd=work)
+    _git(["remote", "add", "origin", str(bare)], cwd=work)
+    refs = [TARGET_BRANCH]
+    if with_source_branch:
+        refs.append(SOURCE_BRANCH)
+    refs.append(f"refs/heads/{SOURCE_BRANCH}:refs/merge-requests/{MR_IID}/head")
+    _git(["push", "origin", *refs], cwd=work)
     return {
         "gitlab_url": gitlab_root.as_uri(),  # file:// — no network
         "target_project": "proj",
         "main_sha": main_sha,
         "head_sha": head_sha,
     }
+
+
+@pytest.fixture()
+def gitlab(tmp_path):
+    return _make_remote(tmp_path, "gitlab")
 
 
 @pytest.fixture()
@@ -139,7 +153,7 @@ def _run_entrypoint(tmp_path, gitlab, fake_opencode, mode, *, timeout="2", extra
         "GITLAB_URL": gitlab["gitlab_url"],
         "GITLAB_TOKEN": FAKE_TOKEN,
         "TARGET_PROJECT": gitlab["target_project"],
-        "MR_IID": "7",
+        "MR_IID": MR_IID,
         "MR_SHA": gitlab["head_sha"],
         "SOURCE_BRANCH": SOURCE_BRANCH,
         "TARGET_BRANCH": TARGET_BRANCH,
@@ -210,6 +224,21 @@ def test_entrypoint_json_result(tmp_path, gitlab, extra_repo, fake_opencode):
         "webfetch": "allow",
         "external_directory": "allow",
     }
+
+
+def test_entrypoint_fork_mr_clones_via_mr_ref(tmp_path, fake_opencode):
+    """Fork MR: the source branch is not on the target project's remote;
+    only refs/merge-requests/<iid>/head reaches the MR head (the clone must
+    use the MR ref, not the branch)."""
+    remote = _make_remote(tmp_path, "gitlab", with_source_branch=False)
+    proc = _run_entrypoint(tmp_path, remote, fake_opencode, "json")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    work = tmp_path / "work"
+    source_sha = _git(["rev-parse", "HEAD"], cwd=work / "target").strip()
+    assert source_sha == remote["head_sha"]
+    log_text = (tmp_path / "out" / "review.log").read_text(encoding="utf-8")
+    assert f"checked out MR head via refs/merge-requests/{MR_IID}/head" in log_text
 
 
 def test_entrypoint_prose_fallback(tmp_path, gitlab, fake_opencode):

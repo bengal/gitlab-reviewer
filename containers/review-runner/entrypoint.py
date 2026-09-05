@@ -4,8 +4,10 @@
 Implements the MILESTONES.md "Milestone 5" entrypoint steps exactly:
 
 1. read the run environment (see ``app/orchestrator/run_review.build_env``);
-2. clone the target repo @ SOURCE_BRANCH into ``/work/target`` with a git
-   credential helper (the token never appears in any argv) and fetch
+2. clone the target repo into ``/work/target`` with a git credential helper
+   (the token never appears in any argv), check out the MR head via GitLab's
+   ``refs/merge-requests/<iid>/head`` ref (which works for fork MRs and
+   deleted branches too, falling back to SOURCE_BRANCH) and fetch
    TARGET_BRANCH as ``origin/<target>`` so the MR diff can be produced;
 3. clone each EXTRA_PROJECTS entry read-only into ``/work/lib/<path>``;
 4. render ``/work/opencode.json`` from ``opencode.json.j2``
@@ -79,9 +81,11 @@ def scrub_value(value: object) -> object:
         return [scrub_value(item) for item in value]
     return value
 
+
 REQUIRED_ENV = (
     "GITLAB_URL",
     "TARGET_PROJECT",
+    "MR_IID",
     "SOURCE_BRANCH",
     "TARGET_BRANCH",
     "OPENCODE_PROVIDER",
@@ -154,11 +158,24 @@ def _target_repo_url() -> str:
 def _clone_target(target: Path) -> None:
     source = os.environ["SOURCE_BRANCH"]
     target_branch = os.environ["TARGET_BRANCH"]
+    mr_iid = os.environ["MR_IID"]
     url = _target_repo_url()
     if target.exists():
         shutil.rmtree(target)
-    log(f"cloning {url} (branch {source}) -> {target}")
-    _run_git(["clone", "--branch", source, url, str(target)])
+    log(f"cloning {url} -> {target}")
+    _run_git(["clone", url, str(target)])
+    # Check out the MR head via GitLab's MR ref: it lives on the target
+    # project's remote even when the MR comes from a fork (whose source
+    # branch is not on this remote) or when the author deleted the branch.
+    # Remotes without MR refs fall back to the source branch.
+    try:
+        _run_git(["fetch", "origin", f"refs/merge-requests/{mr_iid}/head"], cwd=target)
+        _run_git(["checkout", "--detach", "FETCH_HEAD"], cwd=target)
+        log(f"checked out MR head via refs/merge-requests/{mr_iid}/head")
+    except RuntimeError:
+        log(f"MR ref refs/merge-requests/{mr_iid}/head unavailable; using branch {source}")
+        _run_git(["fetch", "origin", f"{source}:refs/remotes/origin/{source}"], cwd=target)
+        _run_git(["checkout", "--detach", f"origin/{source}"], cwd=target)
     _run_git(["fetch", "origin", f"{target_branch}:refs/remotes/origin/{target_branch}"], cwd=target)
     log(f"fetched base branch origin/{target_branch}")
 
