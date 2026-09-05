@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}Settings — GitLab MR Review{% endblock %}
+
+{% block content %}
+<h1>Settings</h1>
+{% if errors %}
+<div class="error">
+  {% for err in errors %}
+  <p>{{ err }}</p>
+  {% endfor %}
+</div>
+{% endif %}
+{% if message %}
+<p class="hint">{{ message }}</p>
+{% endif %}
+
+<form method="post" action="/settings">
+  <section class="card">
+    <h2>GitLab connection</h2>
+    <label for="gitlab_url">Instance URL</label>
+    <input type="text" id="gitlab_url" name="gitlab_url" value="{{ gitlab_url }}"
+           placeholder="https://gitlab.example.com">
+    <label for="gitlab_project">Project</label>
+    <input type="text" id="gitlab_project" name="gitlab_project" value="{{ gitlab_project }}"
+           placeholder="group/project (or numeric project id)">
+    <label for="gitlab_token">Access token</label>
+    <input type="password" id="gitlab_token" name="gitlab_token" value=""
+           placeholder="{{ 'A token is set — leave empty to keep it' if token_set else 'project or personal access token' }}">
+    <div id="test-result"></div>
+  </section>
+
+  <section class="card">
+    <h2>Review</h2>
+    <label for="default_review_prompt">Default review prompt</label>
+    <textarea id="default_review_prompt" name="default_review_prompt" rows="14"
+              spellcheck="false">{{ default_review_prompt }}</textarea>
+    <p class="hint">Pre-filled with the bundled generic prompt on first use; every
+    review uses it unless overridden per review.</p>
+    <label for="known_libraries">Known library projects (JSON)</label>
+    <textarea id="known_libraries" name="known_libraries" rows="5"
+              spellcheck="false">{{ known_libraries }}</textarea>
+    <p class="hint">JSON list of <code>{"url": "...", "ref": "...", "path": "..."}</code>
+    objects, suggested when scheduling a review.</p>
+  </section>
+
+  <section class="card">
+    <h2>Scheduling</h2>
+    <label for="nightly_time">Nightly review time (HH:MM, 24h)</label>
+    <input type="text" id="nightly_time" name="nightly_time" value="{{ nightly_time }}" placeholder="02:30">
+    <label for="max_concurrent_reviews">Max concurrent reviews</label>
+    <input type="number" id="max_concurrent_reviews" name="max_concurrent_reviews" min="1"
+           value="{{ max_concurrent_reviews }}">
+    <label for="poll_interval_seconds">Queue poll interval (seconds)</label>
+    <input type="number" id="poll_interval_seconds" name="poll_interval_seconds" min="1"
+           value="{{ poll_interval_seconds }}">
+    <label class="check">
+      <input type="checkbox" name="post_results_to_gitlab" value="true"
+             {{ 'checked' if post_results_to_gitlab else '' }}>
+      Post results back to the MR as a GitLab note
+    </label>
+  </section>
+
+  <div>
+    <button type="submit" class="btn">Save settings</button>
+    <button type="button" class="btn" hx-post="/settings/test-connection"
+            hx-target="#test-result" hx-swap="innerHTML">Test connection</button>
+  </div>
+</form>
+{% endblock %}

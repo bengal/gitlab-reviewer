@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+
+{% block title %}MR !{{ iid }} not found — GitLab MR Review{% endblock %}
+
+{% block content %}
+<h1>MR !{{ iid }} not found</h1>
+<p class="hint">No cached merge request with that iid for the configured project.
+It may have been closed since the last sync — go back to the
+<a href="/mrs">MR list</a>.</p>
+{% endblock %}

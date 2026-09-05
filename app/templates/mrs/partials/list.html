@@ -1,0 +1,51 @@
+{# List partial: full page include (mrs/list.html) and the HTMX swap target
+   for POST /mrs/sync — the root element keeps the id="mr-list" on re-render. #}
+{% if not configured %}
+<div id="mr-list">
+  <p class="hint">GitLab is not configured yet — set the instance URL, project and
+  token in <a href="/settings">Settings</a>, then come back to fetch the open
+  merge requests.</p>
+</div>
+{% else %}
+<div id="mr-list">
+  {% if sync_message %}
+  <p class="{{ 'error' if sync_error else 'hint' }}">{{ sync_message }}</p>
+  {% endif %}
+  {% if mrs %}
+  <table class="mr-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Title</th>
+        <th>Author</th>
+        <th>Branches</th>
+        <th>SHA</th>
+        <th>State</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for mr in mrs %}
+      <tr>
+        <td><a href="/mrs/{{ mr.iid }}">!{{ mr.iid }}</a></td>
+        <td>
+          <a href="/mrs/{{ mr.iid }}">{{ mr.title }}</a>
+          {% if mr.web_url %}
+          <a class="ext" href="{{ mr.web_url }}" target="_blank" rel="noopener" title="Open in GitLab">ext</a>
+          {% endif %}
+        </td>
+        <td>{{ mr.author }}</td>
+        <td><code>{{ mr.source_branch }}</code> &rarr; <code>{{ mr.target_branch }}</code></td>
+        <td><code>{{ mr.sha[:8] }}</code></td>
+        <td>{{ mr.state }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="hint">No open merge requests cached yet — click Refresh to fetch them from GitLab.</p>
+  {% endif %}
+  <button type="button" class="btn" hx-post="/mrs/sync" hx-target="#mr-list" hx-swap="outerHTML">
+    Refresh
+  </button>
+</div>
+{% endif %}

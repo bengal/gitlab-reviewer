@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}MR !{{ mr.iid }} — GitLab MR Review{% endblock %}
+
+{% block content %}
+<h1>
+  MR !{{ mr.iid }}:
+  {% if mr.web_url %}
+  <a href="{{ mr.web_url }}" target="_blank" rel="noopener">{{ mr.title }}</a>
+  {% else %}
+  {{ mr.title }}
+  {% endif %}
+</h1>
+<dl class="mr-detail">
+  <dt>Author</dt>
+  <dd>{{ mr.author }}</dd>
+  <dt>State</dt>
+  <dd>{{ mr.state }}</dd>
+  <dt>Source branch</dt>
+  <dd><code>{{ mr.source_branch }}</code></dd>
+  <dt>Target branch</dt>
+  <dd><code>{{ mr.target_branch }}</code></dd>
+  <dt>Head SHA</dt>
+  <dd><code>{{ mr.sha }}</code></dd>
+  <dt>Updated at</dt>
+  <dd>{{ mr.updated_at or "unknown" }}</dd>
+  <dt>Last synced</dt>
+  <dd>{{ mr.last_seen_at or "unknown" }}</dd>
+</dl>
+<section class="card">
+  <h2>Schedule review</h2>
+  {# Partial hook: milestone 4 drops mrs/partials/schedule_form.html in place. #}
+  {% include "mrs/partials/schedule_form.html" ignore missing %}
+  <p class="hint" id="schedule-placeholder">Review scheduling arrives in milestone 4.</p>
+</section>
+{% endblock %}
