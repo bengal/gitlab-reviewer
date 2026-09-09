@@ -46,6 +46,10 @@ class ReviewRun(Base):
     log: Mapped[str] = mapped_column(Text, default="")
     result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     result_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # opencode's full session export (opencode export <sessionID>): the model's
+    # reasoning ("thinking") blocks, tool calls and transcript — captured by
+    # the review-runner entrypoint and downloadable from the run detail page.
+    session_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     gitlab_note_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
