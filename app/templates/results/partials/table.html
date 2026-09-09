@@ -9,7 +9,7 @@
       <th>Model</th>
       <th>Status</th>
       <th>Started</th>
-      <th>Finished</th>
+      <th>Duration</th>
       <th>Archived</th>
     </tr>
   </thead>
@@ -23,7 +23,7 @@
       <td>{{ profile.name if profile else "unknown" }}</td>
       <td class="run-status status-{{ run.status }}">{{ run.status }}</td>
       <td>{{ run.started_at or "—" }}</td>
-      <td>{{ run.finished_at or "in progress" }}</td>
+      <td>{{ run_duration(run.started_at, run.finished_at) or "in progress" }}</td>
       <td>{{ run.archived_at or "" }}</td>
     </tr>
     {% endfor %}

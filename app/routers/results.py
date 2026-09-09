@@ -31,6 +31,22 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def format_run_duration(started_at: datetime | None, finished_at: datetime | None) -> str:
+    """A run's wall-clock duration as a short human string
+    ('45s', '7m 12s', '1h 5m'). Empty while it has not finished yet (the
+    table shows "in progress" in that case)."""
+    if started_at is None or finished_at is None:
+        return ""
+    total = int((finished_at - started_at).total_seconds())
+    if total < 60:
+        return f"{total}s"
+    minutes, seconds = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m"
+
+
 def run_rows(db: Session, *, status: str = "all", archived: bool | None = None) -> list:
     """Runs joined with their MR and model profile, newest first.
 
@@ -93,6 +109,7 @@ def results_list(
         "status_choices": [s.value for s in RunStatus],
         "link_prefix": "/results/",
         "empty_hint": "No review runs — schedule one from the MR list, or check the filters.",
+        "run_duration": format_run_duration,
     }
     return _templates(request).TemplateResponse(request, "results/list.html", context)
 

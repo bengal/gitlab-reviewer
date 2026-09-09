@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.deps import get_db
 from app.models import ReviewRun
-from app.routers.results import detail_context, run_rows
+from app.routers.results import detail_context, format_run_duration, run_rows
 
 router = APIRouter()
 
@@ -28,6 +28,7 @@ def archive_list(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
         "runs": run_rows(db, archived=True),
         "link_prefix": "/archive/",
         "empty_hint": "No archived runs yet — archive finished runs from the Results page.",
+        "run_duration": format_run_duration,
     }
     return _templates(request).TemplateResponse(request, "archive/list.html", context)
 
