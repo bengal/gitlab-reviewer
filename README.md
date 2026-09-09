@@ -292,10 +292,11 @@ pass), verify:
       in *Queue* (or use Top/Bottom); the order persists after reload and
       the next pump claims jobs in the new order.
 - [ ] **Live log** — while a review is running, its *Results* detail page's
-      **Log** card updates every 2 s (open, "Live" hint) showing the model's
-      streamed output as it arrives (including `Thinking:` blocks); the
-      *Queue* **Running** row has a **Live log** link to it; the card stops
-      polling once the run finishes.
+      **Log** box (fixed height, scrolls inside) updates every 2 s, keeping
+      the latest output — including `Thinking:` blocks — in view; unchecking
+      **Auto-update** pauses the refresh so the log can be selected and
+      copied; the *Queue* **Running** row has a **Live log** link to it, and
+      the box stops updating once the run finishes.
 - [ ] **Archive + inspect** — *Results* → **Archive** on a run; it leaves
       the results list, appears in *Archive*, and its detail stays readable
       (read-only, no archive button).

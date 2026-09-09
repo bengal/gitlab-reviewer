@@ -75,7 +75,8 @@ def test_results_list_and_detail(authed, db):
     assert "Automated fake review: no issues found." in detail.text
     assert "[README.md]" in detail.text  # positive bucket finding locator
     assert f'action="/results/{run.id}/archive"' in detail.text  # archive button
-    assert "Full log" in detail.text
+    assert 'id="log-box"' in detail.text  # the run's log box
+    assert "[fake] starting review run" in detail.text
 
 
 def test_status_and_archive_filters(authed, db):
@@ -120,7 +121,8 @@ def test_archive_flow(authed, db):
     detail = authed.get(f"/archive/{run.id}")
     assert detail.status_code == 200
     assert "Automated fake review: no issues found." in detail.text
-    assert "Full log" in detail.text
+    assert 'id="log-box"' in detail.text
+    assert "[fake] starting review run" in detail.text
     assert f'action="/results/{run.id}/archive"' not in detail.text
 
     # The results detail remains reachable for archived runs too.
@@ -238,42 +240,51 @@ def _seed_running_run(db, log: str) -> ReviewRun:
     return run
 
 
-def test_running_detail_page_polls_the_live_log(authed, db):
-    """While a run is running, the detail page's log card carries the HTMX
-    poll attributes + the live hint and shows the in-flight log content."""
+def test_running_detail_page_shows_live_log_box(authed, db):
+    """While a run is running, the detail page renders the log in a fixed,
+    read-only textarea with an (on-by-default) Auto-update checkbox and the
+    live hint, and the JSON endpoint serves the growing in-flight log."""
     run = _seed_running_run(db, "cloning...\nThinking: checking the diff\n")
 
     detail = authed.get(f"/results/{run.id}")
     assert detail.status_code == 200
     assert 'id="run-log"' in detail.text
-    assert f'hx-get="/results/{run.id}/log"' in detail.text
-    assert 'hx-trigger="every 2s"' in detail.text
+    assert 'id="log-box"' in detail.text
+    assert 'id="log-autoupdate"' in detail.text
+    assert "readonly" in detail.text
+    # Auto-update is on by default
+    assert 'id="log-autoupdate" checked' in detail.text
     assert "Live — updates every 2 s" in detail.text
     # the in-flight log content (with the thinking block) is shown
     assert "Thinking: checking the diff" in detail.text
+    # the client polls the JSON endpoint while running
+    assert f"/results/{run.id}/log.json" in detail.text
 
-    # the log partial endpoint serves just the card, with the same polling
-    resp = authed.get(f"/results/{run.id}/log")
+    # the JSON endpoint serves the in-flight log + a running status
+    resp = authed.get(f"/results/{run.id}/log.json")
     assert resp.status_code == 200
-    assert "Thinking: checking the diff" in resp.text
-    assert f'hx-get="/results/{run.id}/log"' in resp.text
+    data = resp.json()
+    assert data["status"] == "running"
+    assert "Thinking: checking the diff" in data["log"]
 
 
 def test_finished_detail_page_does_not_poll(authed, db):
-    """A finished run's log card has no poll attributes, so the client stops
-    refreshing once the last swap lands."""
+    """A finished run's log card has no auto-update checkbox and no client
+    poll loop, so the box is static and safe to copy."""
     run = _run_completed(db)
 
     detail = authed.get(f"/results/{run.id}")
     assert detail.status_code == 200
     assert 'id="run-log"' in detail.text
-    assert "hx-trigger" not in detail.text
+    assert 'id="log-box"' in detail.text
+    assert "log-autoupdate" not in detail.text
+    assert "log.json" not in detail.text
     assert "Live — updates every 2 s" not in detail.text
 
-    resp = authed.get(f"/results/{run.id}/log")
+    resp = authed.get(f"/results/{run.id}/log.json")
     assert resp.status_code == 200
-    assert "hx-trigger" not in resp.text
+    assert resp.json()["status"] == "success"
 
 
 def test_log_endpoint_404_for_unknown_run(authed, db):
-    assert authed.get("/results/999/log").status_code == 404
+    assert authed.get("/results/999/log.json").status_code == 404

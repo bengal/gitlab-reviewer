@@ -9,7 +9,7 @@ shared with the read-only /archive/{id} view (app.routers.archive).
 import json
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -127,21 +127,20 @@ def results_detail(request: Request, run_id: int, db: Session = Depends(get_db))
     return _templates(request).TemplateResponse(request, "results/detail.html", context)
 
 
-@router.get("/results/{run_id}/log", response_class=HTMLResponse)
-def results_log(request: Request, run_id: int, db: Session = Depends(get_db)) -> HTMLResponse:
-    """The run's log card only — the live-refresh endpoint.
+@router.get("/results/{run_id}/log.json")
+def results_log_json(run_id: int, db: Session = Depends(get_db)):
+    """The run's log as JSON — the live-refresh endpoint.
 
-    The run detail page polls this while the run is ``running``
-    (results/partials/log.html, ``hx-trigger="every 2s"``): the in-flight
-    ``run.log`` snapshots written by the worker show the model's streamed
-    output (including its ``Thinking:`` blocks) as it arrives. Finished runs
-    render the same card without the polling attributes, so the client stops
-    refreshing once the last swap lands.
+    The run detail page's log box (results/partials/log.html) polls this
+    every 2 s while the run is ``running``: the in-flight ``run.log``
+    snapshots written by the worker show the model's streamed output
+    (including its ``Thinking:`` blocks) as it arrives. The ``status`` field
+    tells the client when the run finished so it can stop polling.
     """
     run = db.get(ReviewRun, run_id)
     if run is None:
-        return _not_found(request, run_id)
-    return _templates(request).TemplateResponse(request, "results/partials/log.html", {"run": run})
+        raise HTTPException(status_code=404, detail="run not found")
+    return {"status": run.status, "log": run.log or ""}
 
 
 @router.get("/results/{run_id}/session")

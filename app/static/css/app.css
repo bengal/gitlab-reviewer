@@ -414,8 +414,7 @@ ul.findings {
   color: #57606a;
 }
 
-.result-raw,
-.run-log {
+.result-raw {
   margin: 0.25rem 0 0.75rem;
   padding: 0.75rem;
   border: 1px solid #d0d7de;
@@ -425,6 +424,31 @@ ul.findings {
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* The run log box: a fixed-height, read-only textarea so a long review
+   scrolls inside the card instead of stretching the page, and the text
+   stays selectable/copyable even while it auto-updates. */
+.run-log {
+  margin: 0.25rem 0 0.75rem;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #f6f8fa;
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  resize: vertical;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-autoupdate {
+  margin: 0.25rem 0 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #1f2328;
 }
 
 details summary {

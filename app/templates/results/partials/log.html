@@ -1,18 +1,63 @@
 {# Log card for a run detail (shared by /results/{id} and /archive/{id}).
-   While the run is still running it re-fetches itself every 2s (HTMX), so
-   the model's streamed output — including its Thinking: blocks — is visible
-   live; finished runs render the same card without the trigger, which stops
-   the polling. Context: run. #}
-<section class="card" id="run-log"
-    {% if run.status == "running" %}hx-get="/results/{{ run.id }}/log" hx-trigger="every 2s" hx-target="#run-log" hx-swap="outerHTML"{% endif %}>
+   The log is shown in a fixed-height, scrollable, read-only textarea so a
+   long review never stretches the page, and so the text can be selected and
+   copied. While the run is still running, a small script re-fetches the
+   run's log from /results/{id}/log.json every 2 s and keeps the box scrolled
+   to the end (showing the latest output, including the model's Thinking:
+   blocks) — unless the "Auto-update" checkbox is switched off, which freezes
+   the box so it can be read or copied. Without JavaScript the box still
+   shows the captured log, just without live updates. Context: run. #}
+<section class="card" id="run-log">
   <h2>Log</h2>
   {% if run.status == "running" %}
-  <p class="hint">Live — updates every 2 s while the review is running.</p>
-  <pre class="run-log">{{ run.log or "(no output yet)" }}</pre>
-  {% else %}
-  <details>
-    <summary>Full log</summary>
-    <pre class="run-log">{{ run.log or "(no log captured)" }}</pre>
-  </details>
+  <label class="check log-autoupdate">
+    <input type="checkbox" id="log-autoupdate" checked>
+    Auto-update
+  </label>
+  <p class="hint">Live — updates every 2 s while the review is running. Uncheck to pause and copy.</p>
+  {% endif %}
+  <textarea id="log-box" class="run-log" rows="18" readonly spellcheck="false">{{ run.log or ("(no output yet)" if run.status == "running" else "(no log captured)") }}</textarea>
+  {% if run.status == "running" %}
+  <script>
+    (function () {
+      var box = document.getElementById("log-box");
+      var check = document.getElementById("log-autoupdate");
+      var url = "/results/{{ run.id }}/log.json";
+      var POLL_MS = 2000;
+      var done = false;
+      var wasNearEnd = true;
+      // Remember whether the user was looking at the bottom, so we only
+      // auto-scroll when they were (a paused/reading user keeps their place).
+      box.addEventListener("scroll", function () {
+        wasNearEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+      });
+      function refresh() {
+        if (done || !check.checked) {
+          return;
+        }
+        fetch(url, {headers: {"Accept": "application/json"}})
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            if (!data) {
+              return;
+            }
+            // Keep the user's current view; otherwise stick to the tail.
+            var stick = wasNearEnd;
+            box.value = data.log || "";
+            if (stick) {
+              box.scrollTop = box.scrollHeight;
+            }
+            if (data.status !== "running") {
+              // One last update, then stop; the card is now static.
+              box.scrollTop = box.scrollHeight;
+              check.checked = false;
+              done = true;
+            }
+          })
+          .catch(function () { /* transient error: retry on the next tick */ });
+      }
+      setInterval(refresh, POLL_MS);
+    })();
+  </script>
   {% endif %}
 </section>
