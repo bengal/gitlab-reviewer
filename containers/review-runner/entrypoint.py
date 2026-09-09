@@ -25,15 +25,20 @@ Implements the MILESTONES.md "Milestone 5" entrypoint steps exactly:
    "Unexpected error" message points at — is appended to LOG_PATH so the
    failure stays diagnosable after the container goes away;
 7. extract the LAST fenced ```json block from the output into RESULT_PATH
-   (default ``/out/result.json``) after validating it against the
-   result_json schema; on parse failure write the raw output to
-   ``result.md`` and still exit 0; timeout -> partial log + exit 124;
-8. always write a final ``EXIT=<code>`` log line.
+    (default ``/out/result.json``) after validating it against the
+    result_json schema; on parse failure write the raw output to
+    ``result.md`` and still exit 0; timeout -> partial log + exit 124;
+8. capture opencode's own session (its full transcript, including the
+    model's reasoning/"thinking" blocks and tool calls) via
+    ``opencode session list`` + ``opencode export <sessionID>`` into
+    SESSION_PATH (default ``/out/session.json``);
+9. always write a final ``EXIT=<code>`` log line.
 
 Secrets (GITLAB_TOKEN, OPENCODE_API_KEY) never reach any log: /out is a
 host bind mount, so everything written there (review.log, result.md,
-result.json) is scrubbed of the run's secret values before it hits disk —
-the LLM can echo a secret it saw in the diff or its own output.
+result.json, session.json) is scrubbed of the run's secret values before
+it hits disk — the LLM can echo a secret it saw in the diff, its own
+output, or the conversation transcript.
 """
 
 import json
@@ -48,6 +53,9 @@ from string import Template
 LOG_PATH = Path(os.environ.get("LOG_PATH", "/out/review.log"))
 RESULT_PATH = Path(os.environ.get("RESULT_PATH", "/out/result.json"))
 RESULT_MD_PATH = RESULT_PATH.with_name("result.md")
+# opencode's session export (transcript + reasoning blocks + tool calls) so
+# the model's thinking can be inspected after the review.
+SESSION_PATH = Path(os.environ.get("SESSION_PATH", "/out/session.json"))
 # opencode's own session logs (where its "Unexpected error" message points).
 # Overridable so the entrypoint can be tested; defaults to the location
 # opencode uses under $HOME inside the container.
@@ -386,6 +394,146 @@ def _run_opencode(prompt: str, config_path: Path, timeout: float) -> tuple[int, 
     return proc.returncode, proc.stdout or ""
 
 
+def _list_opencode_sessions(cwd: Path) -> list | None:
+    """``opencode session list --format json`` from ``cwd`` (or None on
+    failure). opencode scopes the listing to its project root, which is the
+    nearest directory *at or above* cwd that holds a session database — so
+    the caller walks up from the work dir until the run's session shows up.
+    """
+    try:
+        listing = subprocess.run(
+            ["opencode", "session", "list", "--format", "json"],
+            cwd=str(cwd),
+            env=dict(os.environ),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"session capture failed (list): {exc}")
+        return None
+    if listing.returncode != 0:
+        log(f"session capture failed: `opencode session list` exit {listing.returncode}")
+        return None
+    try:
+        sessions = json.loads(listing.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        log(f"session capture failed: unparsable session list: {exc}")
+        return None
+    return sessions if isinstance(sessions, list) else []
+
+
+def _newest_session_id(sessions: list) -> str:
+    """The most recently updated session id of a parsed listing ("" when
+    there is none)."""
+    def sort_key(entry: object) -> float:
+        if not isinstance(entry, dict):
+            return 0.0
+        updated = entry.get("updated") or entry.get("created") or 0
+        try:
+            return float(updated)
+        except (TypeError, ValueError):
+            return 0.0
+
+    newest = max(sessions, key=sort_key, default=None)
+    return str(newest.get("id") or "").strip() if isinstance(newest, dict) else ""
+
+
+def _capture_session() -> None:
+    """Export opencode's session for this run into SESSION_PATH.
+
+    opencode's own session store (its transcript, including the model's
+    reasoning/"thinking" blocks and every tool call) lives under
+    ``$HOME/.local/share/opencode`` inside the container and would otherwise
+    vanish with the ephemeral run. We locate the session this run just
+    created and ``opencode export`` it to SESSION_PATH — which sits on the
+    host bind mount, so it is scrubbed of the run's secrets before it hits
+    disk (the transcript can quote material that carried a secret).
+
+    The session's recorded directory is opencode's project root — the
+    nearest directory at or above the work dir with a session database —
+    not always the work dir itself, so the lookup walks up from
+    WORK_DIR/target to WORK_DIR (then to the filesystem root as a last
+    resort). Best effort: any failure (no sessions, opencode not exporting,
+    a non-JSON export) is logged and swallowed so it can never fail the run
+    — the review result is what matters, the session is diagnostic.
+    """
+    if shutil.which("opencode") is None:
+        log("session capture skipped: opencode not on PATH")
+        return
+    target_dir = WORK_DIR / "target"
+    session_id = ""
+    found_in: Path = target_dir
+    try:
+        # Walk up from the work dir (bounded by its depth): opencode scopes
+        # the listing to the project root — the nearest directory at or
+        # above cwd that holds a session database.
+        seen: set[Path] = set()
+        cwd: Path | None = target_dir
+        while cwd is not None and cwd not in seen and not session_id:
+            seen.add(cwd)
+            sessions = _list_opencode_sessions(cwd)
+            if sessions is None:
+                return  # a hard failure above already logged
+            if sessions:
+                session_id = _newest_session_id(sessions)
+                found_in = cwd
+            parent = cwd.parent
+            cwd = parent if parent != cwd else None
+        if not session_id:
+            # last resort: the most recent session in the global listing
+            home = Path.home()
+            global_sessions = _list_opencode_sessions(home)
+            if global_sessions:
+                session_id = _newest_session_id(global_sessions)
+                found_in = home
+    except Exception as exc:  # capture must never fail the run
+        log(f"session capture failed: {exc!r}")
+        return
+    if not session_id:
+        log("session capture: no opencode session found")
+        return
+    # No --sanitize: it would redact transcript/file data, which is exactly
+    # what the inspection is for; run secrets are scrubbed below like every
+    # other file written to the /out bind mount.
+    try:
+        export = subprocess.run(
+            ["opencode", "export", session_id],
+            cwd=str(found_in),
+            env=dict(os.environ),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"session capture failed (export): {exc}")
+        return
+    if export.returncode != 0:
+        log(f"session capture failed: `opencode export {session_id}` exit {export.returncode}")
+        return
+    try:
+        data = json.loads(export.stdout or "")
+    except json.JSONDecodeError as exc:
+        log(f"session capture failed: unparsable export: {exc}")
+        return
+    if not isinstance(data, dict):
+        log("session capture: export is not a JSON object")
+        return
+    try:
+        SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # /out is a host bind mount: scrub the (untrusted) transcript before
+        # it hits the host filesystem — it may quote secrets from the diff or
+        # from the conversation itself.
+        rendered = json.dumps(scrub_value(data), indent=2, ensure_ascii=False) + "\n"
+        SESSION_PATH.write_text(rendered, encoding="utf-8")
+    except OSError as exc:
+        log(f"session capture: cannot write {SESSION_PATH}: {exc}")
+        return
+    log(f"wrote opencode session export -> {SESSION_PATH}")
+
+
 def _coerce_text(value: object) -> str:
     if value is None:
         return ""
@@ -490,6 +638,8 @@ def run() -> int:
         log(f"no valid fenced json block; wrote raw markdown fallback -> {RESULT_MD_PATH}")
     else:
         log("no valid fenced json block and no output to fall back to")
+
+    _capture_session()
     return exit_code
 
 

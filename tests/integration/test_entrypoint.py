@@ -10,7 +10,10 @@ b) fake opencode prints prose only -> result.md fallback, exit 0;
 c) fake opencode sleeps past a tiny REVIEW_TIMEOUT_SECONDS -> exit 124 and a
    partial log;
 d) fake opencode exits 1 after dropping a session log file -> the tail of
-   that log is appended (scrubbed) to review.log, exit 1.
+   that log is appended (scrubbed) to review.log, exit 1;
+e) after the run, the entrypoint locates the session opencode "created" in
+   the run's working directory (via `opencode session list`) and exports it
+   to /out/session.json — with the run's secrets scrubbed out.
 """
 
 import json
@@ -102,12 +105,35 @@ def extra_repo(tmp_path):
 
 @pytest.fixture()
 def fake_opencode(tmp_path):
-    """A fake opencode executable on PATH, switched by FAKE_OPENCODE_MODE."""
+    """A fake opencode executable on PATH, switched by FAKE_OPENCODE_MODE.
+
+    It also mimics the session-store commands the entrypoint uses for
+    session capture: ``opencode session list --format json`` (a session whose
+    directory is the cwd it is called from) and ``opencode export <id>``
+    (a fixed export document that deliberately quotes the gitlab token, so
+    the scrubbing of /out/session.json is testable).
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     script = bin_dir / "opencode"
     script.write_text(
         "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  session)\n"
+        '    printf \'[{"id": "ses_fake123", "directory": "%s", "updated": 5}]\\n\' "$PWD"\n'
+        "    exit 0\n"
+        "    ;;\n"
+        "  export)\n"
+        '    cat <<EOF\n'
+        '{"info": {"id": "$2", "title": "fake review"}, "messages": ['
+        '{"role": "user", "parts": [{"type": "text", "text": "Review the MR diff."}]}, '
+        '{"role": "assistant", "parts": ['
+        '{"type": "reasoning", "text": "thinking with secret ${GITLAB_TOKEN} inside"}, '
+        '{"type": "text", "text": "looks fine"}]}]}\n'
+        "EOF\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "esac\n"
         'case "$FAKE_OPENCODE_MODE" in\n'
         "  json)\n"
         '    echo "analyzing the diff..."\n'
@@ -177,6 +203,7 @@ def _run_entrypoint(
         "REVIEW_TIMEOUT_SECONDS": timeout,
         "RESULT_PATH": str(out_dir / "result.json"),
         "LOG_PATH": str(out_dir / "review.log"),
+        "SESSION_PATH": str(out_dir / "session.json"),
         "WORK_DIR": str(tmp_path / "work"),
         "FAKE_OPENCODE_MODE": mode,
     }
@@ -361,3 +388,75 @@ def test_entrypoint_opencode_failure_appends_session_log_tail(tmp_path, gitlab, 
     assert log_text.rstrip("\n").endswith("EXIT=1")
     # stdout carries the same scrubbed content
     assert FAKE_TOKEN not in proc.stdout
+
+
+def test_entrypoint_captures_session_export(tmp_path, gitlab, fake_opencode):
+    """The model's session (reasoning blocks + transcript) is exported to
+    /out/session.json so it can be inspected/downloaded after the review."""
+    proc = _run_entrypoint(tmp_path, gitlab, fake_opencode, "json")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    out_dir = tmp_path / "out"
+    session = json.loads((out_dir / "session.json").read_text(encoding="utf-8"))
+    assert session["info"]["id"] == "ses_fake123"
+    assert session["info"]["title"] == "fake review"
+    parts = session["messages"][1]["parts"]
+    assert [part["type"] for part in parts] == ["reasoning", "text"]
+    # the export (untrusted, on the host bind mount) is scrubbed of the token
+    assert FAKE_TOKEN not in json.dumps(session)
+    assert "***" in json.dumps(session)
+
+    log_text = (out_dir / "review.log").read_text(encoding="utf-8")
+    assert "wrote opencode session export" in log_text
+    assert FAKE_TOKEN not in log_text
+    assert FAKE_TOKEN not in proc.stdout
+
+
+def test_entrypoint_session_capture_failure_does_not_fail_run(tmp_path, gitlab):
+    """An opencode without working session commands (or no sessions at all)
+    must not fail the run: session.json is simply absent."""
+    bin_dir = tmp_path / "plain-bin"
+    bin_dir.mkdir()
+    (bin_dir / "opencode").write_text(
+        "#!/bin/sh\necho 'not json from session list'\nexit 0\n", encoding="utf-8"
+    )
+    (bin_dir / "opencode").chmod(0o755)
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir(exist_ok=True)
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(home),
+        "LANG": "C.UTF-8",
+        "GITLAB_URL": gitlab["gitlab_url"],
+        "GITLAB_TOKEN": FAKE_TOKEN,
+        "TARGET_PROJECT": gitlab["target_project"],
+        "MR_IID": MR_IID,
+        "MR_SHA": gitlab["head_sha"],
+        "SOURCE_BRANCH": SOURCE_BRANCH,
+        "TARGET_BRANCH": TARGET_BRANCH,
+        "EXTRA_PROJECTS": "[]",
+        "OPENCODE_PROVIDER": "local",
+        "OPENCODE_MODEL": "qwen3-32b",
+        "OPENCODE_BASE_URL": "http://127.0.0.1:59999/v1",
+        "REVIEW_PROMPT": PROMPT,
+        "REVIEW_TIMEOUT_SECONDS": "2",
+        "RESULT_PATH": str(out_dir / "result.json"),
+        "LOG_PATH": str(out_dir / "review.log"),
+        "SESSION_PATH": str(out_dir / "session.json"),
+        "WORK_DIR": str(tmp_path / "work"),
+        "FAKE_OPENCODE_MODE": "prose",
+    }
+    proc = subprocess.run(
+        [sys.executable, str(ENTRYPOINT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert not (out_dir / "session.json").exists()
+    log_text = (out_dir / "review.log").read_text(encoding="utf-8")
+    assert "session capture failed" in log_text
