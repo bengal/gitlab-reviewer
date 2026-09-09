@@ -22,6 +22,7 @@
         <th>Provider</th>
         <th>Model</th>
         <th>Base URL</th>
+        <th>Context</th>
         <th>API key</th>
         <th></th>
       </tr>
@@ -33,6 +34,7 @@
         <td>{{ p.provider }}</td>
         <td><code>{{ p.model_id }}</code></td>
         <td>{{ p.base_url or "—" }}</td>
+        <td>{{ p.context_window or "—" }}</td>
         <td>{{ p.key_display }}</td>
         <td>
           <button type="button" class="btn small danger" hx-post="/settings/models/{{ p.id }}/delete"
@@ -72,6 +74,13 @@
       <input type="text" id="profile_api_key_env" name="api_key_env"
              value="{{ profile_raw.get('api_key_env', '') if profile_raw else '' }}"
              placeholder="ANTHROPIC_API_KEY">
+      <label for="profile_context_window">Context window, tokens
+        <span class="hint">(local models: the server's ctx-size, e.g. 220000 —
+        enables opencode's auto-compaction; leave empty for known models)</span>
+      </label>
+      <input type="number" id="profile_context_window" name="context_window" min="1" step="1"
+             value="{{ profile_raw.get('context_window', '') if profile_raw else '' }}"
+             placeholder="220000">
     </div>
     <label class="check">
       <input type="checkbox" name="is_default" value="true"

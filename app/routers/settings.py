@@ -66,6 +66,7 @@ def _profile_display(profile: ModelProfile) -> dict[str, object]:
         "base_url": profile.base_url,
         "key_display": key_display,
         "is_default": profile.is_default,
+        "context_window": profile.context_window,
     }
 
 
@@ -244,6 +245,7 @@ def settings_model_create(
     api_key_env: str = Form(""),
     is_default: bool = Form(False),
     extra_opencode_json: str = Form("{}"),
+    context_window: str = Form(""),
 ) -> HTMLResponse:
     row = get_settings_row(db)
     raw = {
@@ -254,9 +256,11 @@ def settings_model_create(
         "api_key_env": api_key_env,
         "is_default": is_default,
         "extra_opencode_json": extra_opencode_json,
+        "context_window": context_window,
     }
     errors: list[str] | None = None
     try:
+        window = int(context_window) if context_window.strip() else None
         form = ModelProfileForm(
             name=name,
             provider=provider,
@@ -266,9 +270,12 @@ def settings_model_create(
             api_key_env=api_key_env,
             is_default=is_default,
             extra_opencode_json=extra_opencode_json,
+            context_window=window,
         )
     except ValidationError as exc:
         errors = [f"{('.'.join(str(part) for part in err['loc']))}: {err['msg']}" for err in exc.errors()]
+    except ValueError:
+        errors = ["context_window must be a positive integer (tokens)"]
     if errors is not None:
         return _render(request, db, row, {}, None, None, profile_raw=raw, profile_errors=errors)
     if is_default:
@@ -284,6 +291,7 @@ def settings_model_create(
             api_key_env=form.api_key_env.strip() or None,
             is_default=form.is_default,
             extra_opencode_json=form.extra_opencode_json,
+            context_window=form.context_window,
         )
     )
     try:

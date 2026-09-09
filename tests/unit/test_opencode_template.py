@@ -1,11 +1,19 @@
 """opencode.json rendering: anthropic vs local, apiKey placement, permissions,
-extra_opencode_json merging, file writer."""
+context-window limit, extra_opencode_json merging, file writer."""
 
+import importlib.util
 import json
+from pathlib import Path
 
 from app.models import ModelProfile
-from app.orchestrator.opencode_template import render_opencode_json, render_opencode_json_file
+from app.orchestrator.opencode_template import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    render_opencode_json,
+    render_opencode_json_file,
+)
 from app.security import encrypt_secret
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 PERMISSIONS = {
     "bash": "allow",
@@ -51,6 +59,44 @@ def test_local_rendering_has_base_url_no_api_key(app, monkeypatch):
     assert block["models"] == {"qwen3-32b": {"name": "qwen3-32b"}}
     assert config["model"] == "local/qwen3-32b"
     assert config["permission"] == PERMISSIONS
+
+
+def test_local_context_window_renders_model_limit(app, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    profile = _profile(
+        provider="local",
+        model_id="qwen3.8",
+        base_url="http://llama-server:8080/v1",
+        context_window=220000,
+    )
+    block = render_opencode_json(profile)["provider"]["local"]
+    assert block["models"] == {
+        "qwen3.8": {
+            "name": "qwen3.8",
+            "limit": {"context": 220000, "output": DEFAULT_MAX_OUTPUT_TOKENS},
+        }
+    }
+
+
+def test_anthropic_context_window_is_not_rendered(app, monkeypatch):
+    """Built-in providers know their models; a context_window there would
+    override models.dev data, so it is only honored for declared (local)
+    models."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    profile = _profile(context_window=220000)
+    block = render_opencode_json(profile)["provider"]["anthropic"]
+    assert "models" not in block
+
+
+def test_default_max_output_matches_container_entrypoint():
+    """The app-side renderer and the container entrypoint must agree on the
+    limit.output headroom (each hardcodes it; this keeps them in sync)."""
+    spec = importlib.util.spec_from_file_location(
+        "review_runner_entrypoint", REPO_ROOT / "containers/review-runner/entrypoint.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.DEFAULT_MAX_OUTPUT_TOKENS == DEFAULT_MAX_OUTPUT_TOKENS
 
 
 def test_local_api_key_placement(app, monkeypatch):

@@ -150,7 +150,9 @@ def fake_opencode(tmp_path):
     return bin_dir
 
 
-def _run_entrypoint(tmp_path, gitlab, fake_opencode, mode, *, timeout="2", extra_projects=None):
+def _run_entrypoint(
+    tmp_path, gitlab, fake_opencode, mode, *, timeout="2", extra_projects=None, extra_env=None
+):
     """Run the entrypoint with a controlled env (local file:// git URL)."""
     out_dir = tmp_path / "out"
     out_dir.mkdir(exist_ok=True)
@@ -178,6 +180,7 @@ def _run_entrypoint(tmp_path, gitlab, fake_opencode, mode, *, timeout="2", extra
         "WORK_DIR": str(tmp_path / "work"),
         "FAKE_OPENCODE_MODE": mode,
     }
+    env.update(extra_env or {})
     return subprocess.run(
         [sys.executable, str(ENTRYPOINT)],
         env=env,
@@ -234,6 +237,28 @@ def test_entrypoint_json_result(tmp_path, gitlab, extra_repo, fake_opencode):
         "webfetch": "allow",
         "external_directory": "allow",
     }
+
+
+def test_entrypoint_model_context_renders_limit(tmp_path, gitlab, fake_opencode):
+    """OPENCODE_MODEL_CONTEXT becomes the model's limit (with the fixed
+    output headroom) so opencode can auto-compact before the local server's
+    context limit is hit; invalid values are ignored."""
+    proc = _run_entrypoint(
+        tmp_path, gitlab, fake_opencode, "json", extra_env={"OPENCODE_MODEL_CONTEXT": "200000"}
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    config = json.loads((tmp_path / "work" / "opencode.json").read_text(encoding="utf-8"))
+    assert config["provider"]["local"]["models"] == {
+        "qwen3-32b": {"name": "qwen3-32b", "limit": {"context": 200000, "output": 32768}}
+    }
+
+    for bad in ("", "not-a-number", "0", "-5"):
+        proc = _run_entrypoint(
+            tmp_path, gitlab, fake_opencode, "json", extra_env={"OPENCODE_MODEL_CONTEXT": bad}
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        config = json.loads((tmp_path / "work" / "opencode.json").read_text(encoding="utf-8"))
+        assert config["provider"]["local"]["models"] == {"qwen3-32b": {"name": "qwen3-32b"}}
 
 
 def test_entrypoint_uses_pre_mounted_library(tmp_path, gitlab, fake_opencode):

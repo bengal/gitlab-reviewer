@@ -17,6 +17,11 @@ env, so the two can be asserted to agree. Shape (per provider):
 Custom (openai-compatible) providers carry no built-in model list, so the
 profile's model must be declared in ``models`` or opencode fails with
 ProviderModelNotFoundError; built-in providers (anthropic) know their models.
+For declared models, ``profile.context_window`` (when set) becomes
+``limit.context`` — opencode's auto-compaction is disabled for models whose
+context window is unknown, so without it a session can run into a local
+server's hard context limit and die mid-turn. ``limit.output`` is always the
+fixed ``DEFAULT_MAX_OUTPUT_TOKENS`` headroom.
 
 ``profile.extra_opencode_json`` is deep-merged over the rendered config (so it
 can add keys or extend provider options without clobbering the base).
@@ -32,6 +37,12 @@ from app.orchestrator.run_review import resolve_api_key
 
 ANTHROPIC_NPM = "@ai-sdk/anthropic"
 OPENAI_COMPATIBLE_NPM = "@ai-sdk/openai-compatible"
+
+# Headroom opencode keeps free for the model's next response when a context
+# window is known (drives its auto-compaction trigger). Sized for heavy
+# thinking models: one turn = reasoning + text + tool call, and the compaction
+# summary is itself a large response.
+DEFAULT_MAX_OUTPUT_TOKENS = 32768
 
 # Headless opencode must never hang waiting for an interactive permission
 # answer, so these are always allowed (see PLAN "Key risks").
@@ -60,7 +71,13 @@ def _provider_block(profile: ModelProfile) -> dict[str, Any]:
     if npm == OPENAI_COMPATIBLE_NPM:
         # Custom npm providers ship no model list; declare the model or
         # opencode raises ProviderModelNotFoundError for <provider>/<model_id>.
-        block["models"] = {profile.model_id: {"name": profile.model_id}}
+        model_entry: dict[str, Any] = {"name": profile.model_id}
+        if profile.context_window:
+            model_entry["limit"] = {
+                "context": profile.context_window,
+                "output": DEFAULT_MAX_OUTPUT_TOKENS,
+            }
+        block["models"] = {profile.model_id: model_entry}
     return block
 
 

@@ -106,6 +106,28 @@ def test_build_env_base_url_local_only(app, db, mr, settings_row, monkeypatch):
     assert env_fallback["OPENCODE_BASE_URL"] == "http://llama-fallback:8080/v1"
 
 
+def test_build_env_model_context_only_when_set(app, db, mr, settings_row):
+    with_window = ModelProfile(
+        name="local-ctx",
+        provider="local",
+        model_id="qwen3.8",
+        base_url="http://llama-server:8080/v1",
+        context_window=220000,
+    )
+    db.add(with_window)
+    db.commit()
+    env_with = build_env(_enqueue(db, mr, with_window), with_window, settings_row)
+    assert env_with["OPENCODE_MODEL_CONTEXT"] == "220000"
+
+    without = ModelProfile(
+        name="local-noctx", provider="local", model_id="qwen3.8", base_url="http://llama-server:8080/v1"
+    )
+    db.add(without)
+    db.commit()
+    env_without = build_env(_enqueue(db, mr, without), without, settings_row)
+    assert "OPENCODE_MODEL_CONTEXT" not in env_without
+
+
 def test_build_env_local_and_anthropic_variants(app, db, mr, settings_row):
     anth = ModelProfile(
         name="anth-k",

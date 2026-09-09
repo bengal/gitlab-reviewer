@@ -64,6 +64,11 @@ TEMPLATE_PATH = Path(
 
 FINDING_BUCKETS = ("critical", "important", "minor", "positive")
 
+# Same headroom as app/orchestrator/opencode_template.py (kept in sync by
+# tests): opencode keeps this many tokens free for the next response, which
+# also sizes its auto-compaction trigger.
+DEFAULT_MAX_OUTPUT_TOKENS = 32768
+
 _FENCED_JSON_RE = re.compile(r"```json[ \t]*\r?\n(.*?)```", re.DOTALL)
 
 # Secrets shorter than this are not worth scrubbing for (same threshold as
@@ -261,7 +266,10 @@ def _render_opencode_config() -> Path:
     one is provided; the headless permission block is always allowed.
     Custom (openai-compatible) providers get a ``models`` block declaring the
     profile's model — opencode has no built-in model list for them and fails
-    with ProviderModelNotFoundError without it.
+    with ProviderModelNotFoundError without it. When OPENCODE_MODEL_CONTEXT is
+    set it becomes the model's ``limit.context`` (with a fixed
+    ``limit.output``) so opencode can auto-compact before the local server's
+    context limit is hit.
     """
     provider = os.environ["OPENCODE_PROVIDER"]
     model_id = os.environ["OPENCODE_MODEL"]
@@ -277,7 +285,16 @@ def _render_opencode_config() -> Path:
 
     provider_block: dict[str, object] = {"npm": npm, "options": options}
     if npm == "@ai-sdk/openai-compatible":
-        provider_block["models"] = {model_id: {"name": model_id}}
+        model_entry: dict[str, object] = {"name": model_id}
+        context = os.environ.get("OPENCODE_MODEL_CONTEXT", "").strip()
+        if context.isdigit() and int(context) > 0:
+            # Without a known context window opencode never auto-compacts and
+            # a long session dies at the server's hard limit mid-turn.
+            model_entry["limit"] = {
+                "context": int(context),
+                "output": DEFAULT_MAX_OUTPUT_TOKENS,
+            }
+        provider_block["models"] = {model_id: model_entry}
 
     rendered = Template(TEMPLATE_PATH.read_text(encoding="utf-8")).substitute(
         provider=provider,

@@ -2,7 +2,7 @@
 
 from enum import StrEnum
 
-from sqlalchemy import JSON, Boolean, String
+from sqlalchemy import JSON, Boolean, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -18,6 +18,8 @@ class ModelProfile(Base):
 
     api_key is stored encrypted at rest; api_key_env names an environment
     variable to read the key from instead (key stays out of the DB).
+    context_window (tokens) is rendered as the model's ``limit`` so opencode
+    can auto-compact before a local server's context limit is hit.
     """
 
     __tablename__ = "model_profile"
@@ -31,3 +33,4 @@ class ModelProfile(Base):
     api_key_env: Mapped[str | None] = mapped_column(String(200), nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     extra_opencode_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    context_window: Mapped[int | None] = mapped_column(Integer, nullable=True)

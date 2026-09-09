@@ -8,7 +8,7 @@ never read back (it is masked on read and only ever written here).
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class ModelProfileForm(BaseModel):
@@ -22,6 +22,7 @@ class ModelProfileForm(BaseModel):
     api_key_env: str = ""
     is_default: bool = False
     extra_opencode_json: dict[str, Any] = {}
+    context_window: int | None = Field(default=None, ge=1)
 
     @field_validator("name", "model_id")
     @classmethod

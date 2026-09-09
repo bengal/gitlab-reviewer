@@ -53,7 +53,9 @@ def build_env(
     ``settings`` is the DB settings singleton row (GitLab URL/project/token,
     default prompt); process-level config (llama URL, timeout, fallback key)
     comes from ``get_settings()``. ``OPENCODE_BASE_URL`` is only set for local
-    providers; ``OPENCODE_API_KEY`` is only set when a key resolves.
+    providers; ``OPENCODE_API_KEY`` is only set when a key resolves;
+    ``OPENCODE_MODEL_CONTEXT`` is only set when the profile knows the model's
+    context window (it drives opencode's auto-compaction for local models).
     """
     if mr is None:
         mr = _load_mr(job)
@@ -79,6 +81,8 @@ def build_env(
         env["OPENCODE_API_KEY"] = api_key
     if profile.provider == Provider.local:
         env["OPENCODE_BASE_URL"] = profile.base_url or cfg.llama_base_url or ""
+    if profile.context_window:
+        env["OPENCODE_MODEL_CONTEXT"] = str(profile.context_window)
     return env
 
 
