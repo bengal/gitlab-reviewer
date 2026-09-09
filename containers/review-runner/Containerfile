@@ -11,11 +11,11 @@
 # build on a wrong URL).
 #
 # v1.x release assets are tarballs containing a single `opencode` binary at
-# the root (verified for v1.18.29; older v0.x assets were zips). For CPUs
+# the root (verified for v1.18.30; older v0.x assets were zips). For CPUs
 # without recent x86 extensions use opencode-linux-x64-baseline.tar.gz.
 FROM python:3.12-slim
 
-ARG OPENCODE_VERSION=1.18.29
+ARG OPENCODE_VERSION=1.18.30
 ARG OPENCODE_ASSET_URL=https://github.com/sst/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz
 
 RUN apt-get update \

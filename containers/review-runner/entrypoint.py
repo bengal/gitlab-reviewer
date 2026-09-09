@@ -43,10 +43,13 @@ output, or the conversation transcript.
 
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from string import Template
 
@@ -63,6 +66,9 @@ OPENCODE_LOG_DIR = Path(
     os.environ.get("OPENCODE_LOG_DIR") or Path.home() / ".local" / "share" / "opencode" / "log"
 )
 _CRASH_LOG_TAIL_BYTES = 40_000
+# Poll period for the opencode output reader thread (same pattern as
+# app/orchestrator/podman_client).
+_POLL_SECONDS = 0.05
 # WORK_DIR/OPENCODE_TEMPLATE are overridable so the entrypoint can be tested
 # outside the container; in production they are /work and /opencode.json.j2.
 WORK_DIR = Path(os.environ.get("WORK_DIR", "/work"))
@@ -364,34 +370,120 @@ def log_opencode_crash_log() -> None:
             log(line)
 
 
-def _run_opencode(prompt: str, config_path: Path, timeout: float) -> tuple[int, str]:
-    """Run opencode headless; return (exit_code, full output). 124 = timeout
-    (the child is killed by subprocess.run; any partial output is kept)."""
+def _is_cli_usage(output: str) -> bool:
+    """True when opencode's output looks like CLI usage text (a flag-parsing
+    failure, e.g. an unknown ``--thinking`` on an older opencode build)
+    rather than a run failure (model/API errors print a JSON payload or
+    provider error lines instead)."""
+    return "Positionals:" in output
+
+
+def _run_opencode_once(
+    prompt: str, config_path: Path, timeout: float, extra_args: list[str]
+) -> tuple[int, str]:
+    """Run opencode headless once; return (exit_code, full output). 124 =
+    timeout (the child is killed at the deadline; any output streamed before
+    it is kept).
+
+    Output is streamed line by line instead of buffered: each line is
+    mirrored to stdout (the podman orchestrator streams it into
+    ``run.log``) and appended to LOG_PATH as it arrives, so the run's log
+    updates in real time and the UI can show the model's progress —
+    including the ``Thinking:`` blocks opencode renders for the model's
+    reasoning — while the review is still in flight.
+    """
     provider = os.environ["OPENCODE_PROVIDER"]
     model_id = os.environ["OPENCODE_MODEL"]
-    command = ["opencode", "run", "-m", f"{provider}/{model_id}", prompt]
+    # -m before the prompt: yargs stops collecting flags at the first
+    # positional, so a prompt beginning with "-" would otherwise be parsed
+    # as an option.
+    command = ["opencode", "run", *extra_args, "-m", f"{provider}/{model_id}", prompt]
     env = dict(os.environ)
     env["OPENCODE_CONFIG"] = str(config_path)
     log(f"running opencode -m {provider}/{model_id} (timeout {timeout:g}s)")
-    try:
-        proc = subprocess.run(
-            command,
-            cwd=str(WORK_DIR / "target"),
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        partial = exc.output
-        if isinstance(partial, bytes):
-            partial = partial.decode("utf-8", errors="replace")
-        log(f"TIMED OUT: opencode still running after {timeout:g}s; partial output follows")
-        if partial:
-            log(partial.rstrip("\n"))
-        return 124, partial or ""
-    return proc.returncode, proc.stdout or ""
+    output: list[str] = []
+    proc = subprocess.Popen(
+        command,
+        cwd=str(WORK_DIR / "target"),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert proc.stdout is not None
+    # A reader thread + queue (like app/orchestrator/podman_client) so the
+    # hard deadline is enforced even when opencode is quiet for a while —
+    # a plain line-by-line read would only notice the deadline on the next
+    # line of output.
+    lines: queue.Queue = queue.Queue()
+
+    def _reader() -> None:
+        try:
+            for line in proc.stdout:
+                lines.put(line)
+        finally:
+            lines.put(None)
+
+    reader = threading.Thread(target=_reader, daemon=True, name="opencode-output-reader")
+    reader.start()
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        try:
+            item = lines.get(timeout=min(_POLL_SECONDS, remaining))
+        except queue.Empty:
+            continue
+        if item is None:
+            break
+        output.append(item)
+        log(item.rstrip("\r\n"))
+    if timed_out:
+        proc.kill()
+        # drain what is already buffered so the partial output is complete
+        while True:
+            try:
+                item = lines.get(timeout=0.1)
+            except queue.Empty:
+                break
+            if item is None:
+                break
+            output.append(item)
+            log(item.rstrip("\r\n"))
+        reader.join(timeout=2.0)
+        proc.wait()
+        log(f"TIMED OUT: opencode still running after {timeout:g}s; partial output kept")
+        return 124, "".join(output)
+    reader.join(timeout=2.0)
+    return proc.wait(), "".join(output)
+
+
+def _run_opencode(prompt: str, config_path: Path, timeout: float) -> tuple[int, str]:
+    """Run opencode headless (with ``--thinking`` so the model's reasoning
+    blocks are rendered into the output stream) and return
+    (exit_code, full output).
+
+    ``--thinking`` requires opencode >= 1.18.30 (see the pinned version in
+    the Containerfile). When an older build rejects the flag — it prints CLI
+    usage text and exits non-zero — the run is retried once without it, so
+    the review still happens (just without the thinking blocks) instead of
+    failing on the flag. The retry gets the remaining timeout budget.
+    """
+    start = time.monotonic()
+    # Cap the first attempt well below the total timeout: a flag rejection
+    # is instant, so a long first budget would leave the retry with
+    # nothing to run on.
+    exit_code, output = _run_opencode_once(
+        prompt, config_path, min(60.0, timeout), ["--thinking"]
+    )
+    if exit_code not in (0, 124) and _is_cli_usage(output):
+        log(f"opencode rejected --thinking (exit {exit_code}); retrying without it")
+        remaining = max(timeout - (time.monotonic() - start), 0.0)
+        exit_code, output = _run_opencode_once(prompt, config_path, remaining, [])
+    return exit_code, output
 
 
 def _list_opencode_sessions(cwd: Path) -> list | None:

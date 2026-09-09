@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -118,6 +119,11 @@ def fake_opencode(tmp_path):
     script = bin_dir / "opencode"
     script.write_text(
         "#!/bin/sh\n"
+        # Record the argv of the run call (the session-capture calls reuse
+        # this fake too and must not clobber it).
+        'if [ "$1" = run ] && [ -n "${FAKE_OPENCODE_ARGS:-}" ]; then\n'
+        '  printf "%s\\n" "$@" > "$FAKE_OPENCODE_ARGS"\n'
+        "fi\n"
         'case "$1" in\n'
         "  session)\n"
         '    printf \'[{"id": "ses_fake123", "directory": "%s", "updated": 5}]\\n\' "$PWD"\n'
@@ -154,6 +160,34 @@ def fake_opencode(tmp_path):
         '    echo "Here is my review of the diff."\n'
         '    echo "Overall the change looks reasonable; no blocking issues found."\n'
         "    ;;\n"
+        "  stream)\n"
+        '    echo "analyzing the diff..."\n'
+        '    echo "Thinking: the change is small; verify the new line."\n'
+        "    sleep 2\n"
+        "    cat <<'EOF'\n"
+        "Review done.\n"
+        "\n"
+        "```json\n"
+        '{"summary": "looks good", '
+        '"findings": {"critical": [], "important": [], "minor": [], "positive": []}, '
+        '"commit_message_review": "ok", "questions": []}\n'
+        "```\n"
+        "EOF\n"
+        "    ;;\n"
+        "  nothink)\n"
+        '    for arg in "$@"; do\n'
+        '      case "$arg" in\n'
+        '        --thinking)\n'
+        '          echo "unknown option: --thinking"\n'
+        '          echo "opencode run [message..]"\n'
+        '          echo "Positionals:"\n'
+        '          echo "  message  message to send"\n'
+        "          exit 1\n"
+        "          ;;\n"
+        "      esac\n"
+        "    done\n"
+        '    echo "no --thinking here"\n'
+        "    ;;\n"
         "  sleep)\n"
         "    exec sleep 30\n"
         "    ;;\n"
@@ -176,10 +210,11 @@ def fake_opencode(tmp_path):
     return bin_dir
 
 
-def _run_entrypoint(
+def _entrypoint_env(
     tmp_path, gitlab, fake_opencode, mode, *, timeout="2", extra_projects=None, extra_env=None
-):
-    """Run the entrypoint with a controlled env (local file:// git URL)."""
+) -> tuple[dict, Path]:
+    """The controlled env for one entrypoint run (local file:// git URL)
+    plus the out dir it writes to."""
     out_dir = tmp_path / "out"
     out_dir.mkdir(exist_ok=True)
     home = tmp_path / "home"
@@ -208,6 +243,17 @@ def _run_entrypoint(
         "FAKE_OPENCODE_MODE": mode,
     }
     env.update(extra_env or {})
+    return env, out_dir
+
+
+def _run_entrypoint(
+    tmp_path, gitlab, fake_opencode, mode, *, timeout="2", extra_projects=None, extra_env=None
+):
+    """Run the entrypoint to completion with a controlled env."""
+    env, _out_dir = _entrypoint_env(
+        tmp_path, gitlab, fake_opencode, mode,
+        timeout=timeout, extra_projects=extra_projects, extra_env=extra_env,
+    )
     return subprocess.run(
         [sys.executable, str(ENTRYPOINT)],
         env=env,
@@ -372,6 +418,74 @@ def test_entrypoint_timeout(tmp_path, gitlab, fake_opencode):
     assert not (out_dir / "result.md").exists()
 
 
+def test_entrypoint_streams_output_live_and_renders_thinking(tmp_path, gitlab, fake_opencode):
+    """opencode's output (including its Thinking: block) is streamed into
+    review.log while the run is still in flight, and the final result is
+    still extracted from the full output."""
+    args_file = tmp_path / "opencode-args.txt"
+    env, out_dir = _entrypoint_env(
+        tmp_path, gitlab, fake_opencode, "stream",
+        timeout="10",
+        extra_env={"FAKE_OPENCODE_ARGS": str(args_file)},
+    )
+    proc = subprocess.Popen(
+        [sys.executable, str(ENTRYPOINT)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    # the fake opencode sleeps 2s after printing the thinking line: while it
+    # is still running, the thinking line must already be in the log
+    deadline = time.time() + 10
+    seen_thinking_live = False
+    while time.time() < deadline:
+        time.sleep(0.1)
+        log_path = out_dir / "review.log"
+        if log_path.exists():
+            content = log_path.read_text(encoding="utf-8")
+            if "Thinking:" in content and "Review done." not in content:
+                seen_thinking_live = True
+                break
+    assert proc.wait(timeout=90) == 0
+    assert seen_thinking_live, "the thinking line was not in review.log while the run was in flight"
+
+    # opencode is invoked with --thinking so reasoning blocks reach the stream
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert "--thinking" in args
+
+    log_text = (out_dir / "review.log").read_text(encoding="utf-8")
+    assert "analyzing the diff..." in log_text
+    assert "Thinking: the change is small; verify the new line." in log_text
+    assert "Review done." in log_text
+    assert log_text.rstrip("\n").endswith("EXIT=0")
+
+    result = json.loads((out_dir / "result.json").read_text(encoding="utf-8"))
+    assert result["summary"] == "looks good"
+    assert FAKE_TOKEN not in log_text
+    assert proc.stdout is not None
+    assert FAKE_TOKEN not in proc.stdout.read()
+
+
+def test_entrypoint_no_thinking_flag_fallback(tmp_path, gitlab, fake_opencode):
+    """An opencode build without --thinking (unknown option, exit 2) must not
+    fail the run: the entrypoint retries without the flag."""
+    env, out_dir = _entrypoint_env(tmp_path, gitlab, fake_opencode, "nothink")
+    proc = subprocess.run(
+        [sys.executable, str(ENTRYPOINT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    log_text = (out_dir / "review.log").read_text(encoding="utf-8")
+    assert "unknown option: --thinking" in log_text
+    assert "retrying without it" in log_text
+    assert "no --thinking here" in log_text
+    assert log_text.rstrip("\n").endswith("EXIT=0")
+
+
 def test_entrypoint_opencode_failure_appends_session_log_tail(tmp_path, gitlab, fake_opencode):
     """opencode's 'Unexpected error' points at a log file inside the
     container; its tail must land in review.log (scrubbed) so the failure is
@@ -422,33 +536,7 @@ def test_entrypoint_session_capture_failure_does_not_fail_run(tmp_path, gitlab):
     )
     (bin_dir / "opencode").chmod(0o755)
 
-    out_dir = tmp_path / "out"
-    out_dir.mkdir(exist_ok=True)
-    home = tmp_path / "home"
-    home.mkdir(exist_ok=True)
-    env = {
-        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-        "HOME": str(home),
-        "LANG": "C.UTF-8",
-        "GITLAB_URL": gitlab["gitlab_url"],
-        "GITLAB_TOKEN": FAKE_TOKEN,
-        "TARGET_PROJECT": gitlab["target_project"],
-        "MR_IID": MR_IID,
-        "MR_SHA": gitlab["head_sha"],
-        "SOURCE_BRANCH": SOURCE_BRANCH,
-        "TARGET_BRANCH": TARGET_BRANCH,
-        "EXTRA_PROJECTS": "[]",
-        "OPENCODE_PROVIDER": "local",
-        "OPENCODE_MODEL": "qwen3-32b",
-        "OPENCODE_BASE_URL": "http://127.0.0.1:59999/v1",
-        "REVIEW_PROMPT": PROMPT,
-        "REVIEW_TIMEOUT_SECONDS": "2",
-        "RESULT_PATH": str(out_dir / "result.json"),
-        "LOG_PATH": str(out_dir / "review.log"),
-        "SESSION_PATH": str(out_dir / "session.json"),
-        "WORK_DIR": str(tmp_path / "work"),
-        "FAKE_OPENCODE_MODE": "prose",
-    }
+    env, out_dir = _entrypoint_env(tmp_path, gitlab, bin_dir, "prose")
     proc = subprocess.run(
         [sys.executable, str(ENTRYPOINT)],
         env=env,
