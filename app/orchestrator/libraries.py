@@ -34,6 +34,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from app.config import Settings
+from app.services.extra_projects import normalize_extra_projects
 
 log = logging.getLogger(__name__)
 
@@ -226,11 +227,16 @@ def ensure_libraries(
 ) -> list[tuple[str, str]]:
     """Ensure a checkout for every extra-projects entry.
 
-    Returns the ``(host_path, /work/lib-relative path)`` pairs to bind-mount
-    read-only into the review container.
+    Entries with only a ``url`` get their path derived from it (same
+    derivation as the prompt and the container env), so they are checked
+    out and mounted instead of being skipped. Returns the
+    ``(host_path, /work/lib-relative path)`` pairs to bind-mount read-only
+    into the review container (deduplicated: the same library listed twice
+    yields one mount).
     """
     mounts: list[tuple[str, str]] = []
-    for entry in entries or []:
+    seen: set[str] = set()
+    for entry in normalize_extra_projects(entries or []):
         dest = ensure_library_checkout(
             entry,
             root=root,
@@ -239,5 +245,8 @@ def ensure_libraries(
             log_line=log_line,
         )
         if dest is not None:
-            mounts.append((str(dest), library_relpath(entry)))
+            relpath = library_relpath(entry)
+            if relpath is not None and relpath not in seen:
+                seen.add(relpath)
+                mounts.append((str(dest), relpath))
     return mounts

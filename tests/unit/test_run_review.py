@@ -172,6 +172,24 @@ def test_build_env_extra_projects_json_round_trip(app, db, mr, profile, settings
     assert "/work/lib/libb" in env["REVIEW_PROMPT"]
 
 
+def test_build_env_extra_projects_pathless_get_derived_path(app, db, mr, profile, settings_row):
+    """A URL-only extra project gets its /work/lib path derived from the URL
+    in both the EXTRA_PROJECTS env and the prompt (the stored job keeps the
+    raw entry)."""
+    extras = [
+        {"url": "https://gitlab.example.com/group/systemd.git"},
+        {"url": "https://gitlab.example.com/group/libb.git", "ref": "main", "path": "libb"},
+    ]
+    job = _enqueue(db, mr, profile, extra_projects=extras)
+    assert job.extra_projects == extras  # stored raw
+    env = build_env(job, profile, settings_row)
+    parsed = json.loads(env["EXTRA_PROJECTS"])
+    assert parsed[0] == {"url": "https://gitlab.example.com/group/systemd.git", "path": "systemd"}
+    assert parsed[1] == extras[1]
+    assert "/work/lib/systemd" in env["REVIEW_PROMPT"]  # derived mount path in the prompt
+    assert "/work/lib/libb" in env["REVIEW_PROMPT"]
+
+
 def test_build_env_prompt_override_wins(app, db, mr, profile, settings_row):
     job = _enqueue(db, mr, profile, prompt_override="Focus on the TLS code only.")
     env = build_env(job, profile, settings_row)

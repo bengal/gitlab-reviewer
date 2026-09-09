@@ -334,6 +334,19 @@ def test_entrypoint_model_context_renders_limit(tmp_path, gitlab, fake_opencode)
         assert config["provider"]["local"]["models"] == {"qwen3-32b": {"name": "qwen3-32b"}}
 
 
+def test_entrypoint_derives_path_for_pathless_extra_project(tmp_path, gitlab, extra_repo, fake_opencode):
+    """A URL-only EXTRA_PROJECTS entry (no path) is cloned at the path
+    derived from the URL (…/liba.git -> liba), like the app side does."""
+    entry = {"url": extra_repo["url"], "ref": extra_repo["ref"]}  # no path
+    proc = _run_entrypoint(tmp_path, gitlab, fake_opencode, "json", extra_projects=[entry])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    lib = tmp_path / "work" / "lib" / "liba"
+    assert (lib / "lib.txt").exists()
+    log_text = (tmp_path / "out" / "review.log").read_text(encoding="utf-8")
+    assert "cloning extra library repo" in log_text
+
+
 def test_entrypoint_uses_pre_mounted_library(tmp_path, gitlab, fake_opencode):
     """When /work/lib/<path> already exists (the app bind-mounts a persistent
     host-side checkout there), the entrypoint must use it as-is and NOT

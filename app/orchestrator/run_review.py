@@ -11,6 +11,7 @@ import os
 from app.config import get_settings
 from app.models import MergeRequest, ModelProfile, Provider, ScheduledJob, SettingsRow
 from app.security import decrypt_secret
+from app.services.extra_projects import normalize_extra_projects
 from app.services.prompt import _load_mr, build_review_prompt
 
 RESULT_PATH = "/out/result.json"
@@ -69,7 +70,9 @@ def build_env(
         "MR_SHA": mr.sha,
         "SOURCE_BRANCH": mr.source_branch,
         "TARGET_BRANCH": mr.target_branch,
-        "EXTRA_PROJECTS": json.dumps(job.extra_projects or []),
+        # normalized (a URL-only entry gets its path derived from the URL)
+        # so the entrypoint mounts at the same /work/lib path the prompt names
+        "EXTRA_PROJECTS": json.dumps(normalize_extra_projects(job.extra_projects or [])),
         "OPENCODE_PROVIDER": profile.provider,
         "OPENCODE_MODEL": profile.model_id,
         "REVIEW_PROMPT": build_review_prompt(job, settings, mr=mr),

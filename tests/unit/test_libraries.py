@@ -201,7 +201,9 @@ def test_ensure_libraries_returns_mounts(lib_remote, tmp_path):
     mounts = libraries.ensure_libraries(
         [
             {"url": lib_remote["url"], "ref": "main", "path": "liba"},
-            {"url": lib_remote["url"]},  # no path: skipped, like the entrypoint
+            # no path: derived "liba" from the URL — the same checkout as the
+            # explicit entry above, so it yields no second mount
+            {"url": lib_remote["url"]},
             "junk",  # malformed: skipped
         ],
         root=tmp_path / "libs",
@@ -209,3 +211,17 @@ def test_ensure_libraries_returns_mounts(lib_remote, tmp_path):
     )
     assert mounts == [(str(tmp_path / "libs" / "liba"), "liba")]
     assert (tmp_path / "libs" / "liba" / "a.txt").exists()
+
+
+def test_ensure_libraries_derives_path_from_url(lib_remote, tmp_path):
+    """A URL-only entry is checked out at the path derived from the URL
+    (…/liba.git -> liba) instead of being skipped."""
+    root = tmp_path / "libs"
+    logs: list[str] = []
+    mounts = libraries.ensure_libraries(
+        [{"url": lib_remote["url"], "ref": "main"}], root=root, max_age_hours=24, log_line=logs.append
+    )
+    assert mounts == [(str(root / "liba"), "liba")]
+    assert (root / "liba" / "a.txt").read_text(encoding="utf-8") == "one\n"
+    assert any("cloning library repo" in line for line in logs)
+    assert not any("skipping" in line for line in logs)

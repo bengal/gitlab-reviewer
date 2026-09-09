@@ -9,10 +9,11 @@ Implements the MILESTONES.md "Milestone 5" entrypoint steps exactly:
     ``refs/merge-requests/<iid>/head`` ref (which works for fork MRs and
     deleted branches too, falling back to SOURCE_BRANCH) and fetch
     TARGET_BRANCH as ``origin/<target>`` so the MR diff can be produced;
- 3. provide each EXTRA_PROJECTS entry read-only at ``/work/lib/<path>``:
-    when the app already bind-mounts a persistent host-side checkout there
-    (the current app), use it as-is; otherwise clone the repo (standalone
-    / older-app fallback);
+ 3. provide each EXTRA_PROJECTS entry read-only at ``/work/lib/<path>``
+    (an entry without a path gets one derived from its URL): when the app
+    already bind-mounts a persistent host-side checkout there (the current
+    app), use it as-is; otherwise clone the repo (standalone / older-app
+    fallback);
 4. render ``/work/opencode.json`` from ``opencode.json.j2``
    (``string.Template``, stdlib only) so the rendered config is equivalent
    to ``app/orchestrator/opencode_template.render_opencode_json``;
@@ -52,6 +53,7 @@ import threading
 import time
 from pathlib import Path
 from string import Template
+from urllib.parse import urlsplit
 
 LOG_PATH = Path(os.environ.get("LOG_PATH", "/out/review.log"))
 RESULT_PATH = Path(os.environ.get("RESULT_PATH", "/out/result.json"))
@@ -227,13 +229,33 @@ def _make_read_only(root: Path) -> None:
         pass
 
 
+def _derive_path(url: str) -> str:
+    """The default /work/lib-relative path for a repo URL: the last
+    non-empty segment of the URL's path component, with a trailing ``.git``
+    stripped ("" when the URL has no path).
+
+    Mirrors app/services/extra_projects.derive_path — the current app
+    applies it before the container starts, so this only matters for
+    standalone runs that pass raw URLs.
+    """
+    segments = [segment for segment in urlsplit(url).path.split("/") if segment]
+    if not segments:
+        return ""
+    name = segments[-1]
+    if name.endswith(".git"):
+        name = name[: -len(".git")]
+    return name
+
+
 def _clone_extra_projects() -> None:
     """Provide each EXTRA_PROJECTS entry read-only at /work/lib/<path>.
 
-    The current app bind-mounts a persistent host-side checkout at that path
-    before the container starts; when the destination already exists it is
-    used as-is (it is already read-only). Otherwise the repo is cloned
-    (standalone use, or an older app that does not mount checkouts).
+    An entry without a path gets one derived from its URL (see
+    ``_derive_path``). The current app bind-mounts a persistent host-side
+    checkout at that path before the container starts; when the destination
+    already exists it is used as-is (it is already read-only). Otherwise the
+    repo is cloned (standalone use, or an older app that does not mount
+    checkouts).
     """
     raw = os.environ.get("EXTRA_PROJECTS", "").strip()
     if not raw:
@@ -251,9 +273,14 @@ def _clone_extra_projects() -> None:
         url = str(entry.get("url") or "").strip()
         ref = str(entry.get("ref") or "").strip()
         path = str(entry.get("path") or "").strip().strip("/")
-        if not url or not path:
-            log(f"skipping EXTRA_PROJECTS entry without url/path: {entry!r}")
+        if not url:
+            log(f"skipping EXTRA_PROJECTS entry without url: {entry!r}")
             continue
+        if not path:
+            path = _derive_path(url)
+            if not path:
+                log(f"skipping EXTRA_PROJECTS entry without url/path: {entry!r}")
+                continue
         if ".." in path.split("/"):
             log(f"skipping EXTRA_PROJECTS entry with unsafe path: {path!r}")
             continue

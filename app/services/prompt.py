@@ -6,6 +6,7 @@ strict single-fenced-```json output instruction are always appended.
 """
 
 from app.models import MergeRequest, ScheduledJob, SettingsRow
+from app.services.extra_projects import normalize_extra_projects
 
 #: Shape of the required fenced JSON block (mirrors app.schemas.result).
 RESULT_JSON_SCHEMA = """{
@@ -40,8 +41,16 @@ def _context_lines(job: ScheduledJob, settings: SettingsRow, mr: MergeRequest) -
         f"- Target branch: {mr.target_branch}",
         f"- Head commit: {mr.sha}",
     ]
-    for entry in job.extra_projects or []:
-        url = entry.get("url") or ""
+    # Normalize like the container env and the library checkouts, so the
+    # path the prompt promises is the path the run actually mounts: a
+    # URL-only entry is listed at its derived /work/lib path, and an entry
+    # without a url is omitted (it is never mounted).
+    for entry in normalize_extra_projects(job.extra_projects or []):
+        if not isinstance(entry, dict):
+            continue
+        url = str(entry.get("url") or "").strip()
+        if not url:
+            continue
         ref = entry.get("ref") or "default branch"
         mount = f"/work/lib/{entry.get('path') or ''}".rstrip("/")
         lines.append(f"- Extra library repo (read-only): {url} @ {ref} mounted at {mount}")
