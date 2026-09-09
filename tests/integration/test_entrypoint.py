@@ -174,6 +174,11 @@ def fake_opencode(tmp_path):
         "```\n"
         "EOF\n"
         "    ;;\n"
+        "  ansi)\n"
+        "    printf '\\033[91mcolored review line\\033[0m\\n'\n"
+        "    printf '\\033[0m\\n'\n"
+        "    printf 'plain with \\033[1mbold\\033[0m tail\\n'\n"
+        "    ;;\n"
         "  nothink)\n"
         '    for arg in "$@"; do\n'
         '      case "$arg" in\n'
@@ -277,6 +282,7 @@ def test_entrypoint_json_result(tmp_path, gitlab, extra_repo, fake_opencode):
 
     log_text = (out_dir / "review.log").read_text(encoding="utf-8")
     assert "analyzing the diff..." in log_text  # opencode output captured
+    assert log_text.count("analyzing the diff...") == 1  # streamed exactly once
     assert log_text.rstrip("\n").endswith("EXIT=0")
     # the token reached git only via the credential-helper env
     assert FAKE_TOKEN not in log_text
@@ -370,6 +376,27 @@ def test_entrypoint_uses_pre_mounted_library(tmp_path, gitlab, fake_opencode):
     log_text = (tmp_path / "out" / "review.log").read_text(encoding="utf-8")
     assert "using bind-mounted library checkout" in log_text
     assert "cloning extra library repo" not in log_text
+
+
+def test_entrypoint_strips_ansi_from_output(tmp_path, gitlab, fake_opencode):
+    """opencode's ANSI color codes are stripped from review.log and the
+    markdown fallback; a line made up purely of escape sequences is dropped
+    entirely (it would otherwise show up as a blank line)."""
+    proc = _run_entrypoint(tmp_path, gitlab, fake_opencode, "ansi")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    out_dir = tmp_path / "out"
+    log_text = (out_dir / "review.log").read_text(encoding="utf-8")
+    assert "\x1b" not in log_text
+    assert "colored review line" in log_text
+    assert "plain with bold tail" in log_text
+    assert "colored review line\n\nplain" not in log_text  # no blank line from the ESC-only one
+
+    # no fenced json in the output -> markdown fallback, stripped as well
+    markdown = (out_dir / "result.md").read_text(encoding="utf-8")
+    assert "\x1b" not in markdown
+    assert "colored review line" in markdown
+    assert "\x1b" not in proc.stdout
 
 
 def test_entrypoint_fork_mr_clones_via_mr_ref(tmp_path, fake_opencode):
@@ -471,6 +498,10 @@ def test_entrypoint_streams_output_live_and_renders_thinking(tmp_path, gitlab, f
     assert "analyzing the diff..." in log_text
     assert "Thinking: the change is small; verify the new line." in log_text
     assert "Review done." in log_text
+    # regression: the full output used to be re-logged after the per-line
+    # streaming, doubling every line in review.log
+    assert log_text.count("Review done.") == 1
+    assert log_text.count("Thinking: the change is small; verify the new line.") == 1
     assert log_text.rstrip("\n").endswith("EXIT=0")
 
     result = json.loads((out_dir / "result.json").read_text(encoding="utf-8"))

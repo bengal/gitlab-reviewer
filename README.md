@@ -48,14 +48,17 @@ Browser --HTTPS--> Web app container (FastAPI + Jinja/HTMX + APScheduler)
 - **Review-runner** (`containers/review-runner/`) — stdlib-only entrypoint:
   clones the target MR branch + base (token via git credential helper); the
   extra library repos arrive read-only at `/work/lib/<path>` — the app keeps
-  a persistent checkout per library on the host (`LIBRARY_CHECKOUT_DIR`,
-  re-pulled at most every `LIBRARY_PULL_MAX_AGE_HOURS`) and bind-mounts them
-  (the entrypoint clones as a fallback when a checkout is not mounted);
+   a persistent checkout per library on the host (`LIBRARY_CHECKOUT_DIR`,
+   re-pulled at most every `LIBRARY_PULL_MAX_AGE_HOURS`) and bind-mounts them
+   (the entrypoint clones as a fallback when a checkout is not mounted); an
+   extra project given as a bare URL gets its `/work/lib/<path>` derived
+   from the last URL segment (`.git` stripped);
   then it renders `opencode.json` (provider block;
   `permission.bash/edit/webfetch = allow`), runs
-   `opencode run --thinking -m <provider>/<model> "<prompt>"` under a hard
-   timeout, streaming the model's output (including its `Thinking:` blocks)
-   line by line to `review.log` — which the app persists as it arrives and
+    `opencode run --thinking -m <provider>/<model> "<prompt>"` under a hard
+    timeout, streaming the model's output (including its `Thinking:` blocks,
+    ANSI color codes stripped) line by line to `review.log` — which the app
+    persists as it arrives and
    the run detail page shows live — then extracting the final fenced JSON
    block to `result.json` (falls back to raw markdown). It also exports
    opencode's own session (the model's reasoning/"thinking" blocks, tool

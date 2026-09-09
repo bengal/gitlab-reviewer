@@ -97,6 +97,16 @@ _SCRUB_SECRETS = [
     if value and len(value) >= MIN_SCRUB_LEN
 ]
 
+# ANSI escape sequences (CSI color codes, OSC, and simple two-byte escapes)
+# that opencode emits for colored terminal output. They are stripped so the
+# stored run log stays plain text; the sequences never carry review content.
+_ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from a line of opencode output."""
+    return _ANSI_RE.sub("", text)
+
 
 def scrub(text: str) -> str:
     """Replace each run secret with ``***`` (no-op when none are set)."""
@@ -135,8 +145,10 @@ def log(message: str) -> None:
 
     The message is scrubbed of the run's secrets first: LOG_PATH lives on
     the host's bind mount, so the file must not carry raw secret values.
+    ANSI escape sequences are stripped too (opencode colors its terminal
+    output; the stored log must stay plain text).
     """
-    message = scrub(message)
+    message = strip_ansi(scrub(message))
     print(message, flush=True)
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -417,7 +429,9 @@ def _run_opencode_once(
     ``run.log``) and appended to LOG_PATH as it arrives, so the run's log
     updates in real time and the UI can show the model's progress —
     including the ``Thinking:`` blocks opencode renders for the model's
-    reasoning — while the review is still in flight.
+    reasoning — while the review is still in flight. ANSI escape sequences
+    (color codes) are stripped per line, and lines made up purely of them
+    are dropped, so the stored log is plain text.
     """
     provider = os.environ["OPENCODE_PROVIDER"]
     model_id = os.environ["OPENCODE_MODEL"]
@@ -466,8 +480,10 @@ def _run_opencode_once(
             continue
         if item is None:
             break
-        output.append(item)
-        log(item.rstrip("\r\n"))
+        line = strip_ansi(item.rstrip("\r\n"))
+        if line:  # a line of pure escape sequences (color resets) adds nothing
+            output.append(line + "\n")
+            log(line)
     if timed_out:
         proc.kill()
         # drain what is already buffered so the partial output is complete
@@ -478,8 +494,10 @@ def _run_opencode_once(
                 break
             if item is None:
                 break
-            output.append(item)
-            log(item.rstrip("\r\n"))
+            line = strip_ansi(item.rstrip("\r\n"))
+            if line:
+                output.append(line + "\n")
+                log(line)
         reader.join(timeout=2.0)
         proc.wait()
         log(f"TIMED OUT: opencode still running after {timeout:g}s; partial output kept")
@@ -734,9 +752,9 @@ def run() -> int:
         log(f"ERROR: {exc}")
         return 1
 
+    # The output was already mirrored line by line while streaming; it is
+    # kept here only for the result extraction and the markdown fallback.
     exit_code, output = _run_opencode(prompt, config_path, timeout)
-    if output:
-        log(output.rstrip("\n"))
     if exit_code not in (0, 124):
         log(f"opencode exited with code {exit_code}")
         log_opencode_crash_log()
