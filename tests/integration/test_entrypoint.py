@@ -486,6 +486,25 @@ def test_entrypoint_no_thinking_flag_fallback(tmp_path, gitlab, fake_opencode):
     assert log_text.rstrip("\n").endswith("EXIT=0")
 
 
+def test_entrypoint_long_budget_reaches_opencode(tmp_path, gitlab, fake_opencode):
+    """A long REVIEW_TIMEOUT_SECONDS must be passed to opencode in full —
+    the first attempt must not be capped (regression: a 60s cap timed out
+    legitimate long reviews with EXIT=124)."""
+    env, out_dir = _entrypoint_env(
+        tmp_path, gitlab, fake_opencode, "nothink", timeout="300",
+    )
+    proc = subprocess.run(
+        [sys.executable, str(ENTRYPOINT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    log_text = (out_dir / "review.log").read_text(encoding="utf-8")
+    assert "running opencode -m local/qwen3-32b (timeout 300s)" in log_text
+
+
 def test_entrypoint_opencode_failure_appends_session_log_tail(tmp_path, gitlab, fake_opencode):
     """opencode's 'Unexpected error' points at a log file inside the
     container; its tail must land in review.log (scrubbed) so the failure is

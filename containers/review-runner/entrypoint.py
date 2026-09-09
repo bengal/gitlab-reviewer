@@ -473,12 +473,10 @@ def _run_opencode(prompt: str, config_path: Path, timeout: float) -> tuple[int, 
     failing on the flag. The retry gets the remaining timeout budget.
     """
     start = time.monotonic()
-    # Cap the first attempt well below the total timeout: a flag rejection
-    # is instant, so a long first budget would leave the retry with
-    # nothing to run on.
-    exit_code, output = _run_opencode_once(
-        prompt, config_path, min(60.0, timeout), ["--thinking"]
-    )
+    # The first attempt gets the full budget: a --thinking rejection is
+    # instant, so capping it would only truncate legitimate long reviews
+    # (and the retry below still gets the remaining time).
+    exit_code, output = _run_opencode_once(prompt, config_path, timeout, ["--thinking"])
     if exit_code not in (0, 124) and _is_cli_usage(output):
         log(f"opencode rejected --thinking (exit {exit_code}); retrying without it")
         remaining = max(timeout - (time.monotonic() - start), 0.0)
