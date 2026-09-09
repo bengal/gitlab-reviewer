@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.db import get_settings_row
 from app.models import MergeRequest, ModelProfile, ReviewRun
+from app.orchestrator.fake_orchestrator import CANNED_SESSION_JSON, FakeOrchestrator
 from app.scheduler import worker
 from app.services import scheduling
 
@@ -129,3 +130,71 @@ def test_archive_unknown_or_unarchived_run_404(authed, db):
     assert authed.get("/archive/999").status_code == 404
     assert authed.get(f"/archive/{run.id}").status_code == 404  # not archived yet
     assert authed.get("/results/999").status_code == 404
+
+
+def test_session_download_and_detail_link(authed, app, db):
+    """The model's session (thinking + transcript) is stored on the run,
+    linked from the detail page, and downloadable as a JSON attachment."""
+    app.state.orchestrator = FakeOrchestrator.success(
+        result_json={"summary": "ok", "findings": {"critical": []}},
+        session_json=CANNED_SESSION_JSON,
+    )
+    run = _run_completed(db)
+
+    detail = authed.get(f"/results/{run.id}")
+    assert detail.status_code == 200
+    assert "Model session" in detail.text
+    assert f'/results/{run.id}/session' in detail.text
+
+    resp = authed.get(f"/results/{run.id}/session")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/json")
+    assert f'run-{run.id}-session.json' in resp.headers.get("content-disposition", "")
+    payload = resp.json()
+    assert payload["info"]["id"] == CANNED_SESSION_JSON["info"]["id"]
+    # the model's thinking blocks are present in the download
+    reasoning = [
+        part
+        for message in payload["messages"]
+        for part in message.get("parts", [])
+        if part.get("type") == "reasoning"
+    ]
+    assert reasoning and "Thinking:" in reasoning[0]["text"]
+
+
+def test_session_download_404_without_session(authed, app, db):
+    """A run with no session capture (e.g. a failed run) offers no download
+    and the detail page says so."""
+    row = get_settings_row(db)
+    row.gitlab_project = PROJECT
+    db.commit()
+    profile = ModelProfile(name="claude", provider="anthropic", model_id="claude-sonnet-4")
+    mr = MergeRequest(
+        project=PROJECT,
+        iid=5,
+        title="Failing review",
+        author="dev@example.com",
+        source_branch="failing",
+        target_branch="main",
+        sha="e" * 40,
+        web_url=f"https://gitlab.example.com/{PROJECT}/-/merge_requests/5",
+        state="opened",
+    )
+    db.add_all([profile, mr])
+    db.commit()
+
+    app.state.orchestrator = FakeOrchestrator.failure()
+    scheduling.enqueue(db, mr=mr, profile=profile, schedule_type="immediate")
+    worker.pump_once()
+    worker.drain()
+    db.expire_all()
+
+    run = db.scalar(select(ReviewRun).where(ReviewRun.merge_request_id == mr.id))
+    assert run is not None
+    assert run.status == "error"
+    assert run.session_json is None
+
+    assert authed.get(f"/results/{run.id}/session").status_code == 404
+    detail = authed.get(f"/results/{run.id}")
+    assert detail.status_code == 200
+    assert "No session was captured for this run." in detail.text

@@ -6,10 +6,11 @@ JavaScript. The run detail body lives in results/partials/detail.html and is
 shared with the read-only /archive/{id} view (app.routers.archive).
 """
 
+import json
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -124,6 +125,24 @@ def results_detail(request: Request, run_id: int, db: Session = Depends(get_db))
     context["read_only"] = False
     context["message"] = None
     return _templates(request).TemplateResponse(request, "results/detail.html", context)
+
+
+@router.get("/results/{run_id}/session")
+def results_session_download(request: Request, run_id: int, db: Session = Depends(get_db)):
+    """Download the run's opencode session export (model thinking + full
+    transcript) as a JSON attachment. 404 when the run is unknown or the run
+    produced no session capture (e.g. fake backend, opencode failed)."""
+    run = db.get(ReviewRun, run_id)
+    if run is None:
+        return _not_found(request, run_id)
+    if not run.session_json:
+        return Response(status_code=404, content="no session captured for this run")
+    body = json.dumps(run.session_json, indent=2, ensure_ascii=False) + "\n"
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="run-{run_id}-session.json"'},
+    )
 
 
 @router.post("/results/{run_id}/archive", response_class=HTMLResponse)

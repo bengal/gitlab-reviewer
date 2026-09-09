@@ -83,6 +83,18 @@
     <pre class="run-log">{{ run.log or "(no log captured)" }}</pre>
   </details>
 </section>
+<section class="card">
+  <h2>Model session</h2>
+  <p class="hint">
+    The model's full session — its reasoning ("thinking") blocks, tool calls
+    and transcript — as exported by opencode.
+  </p>
+  {% if run.session_json %}
+  <a class="btn" href="/results/{{ run.id }}/session" download>Download session (JSON)</a>
+  {% else %}
+  <p class="hint">No session was captured for this run.</p>
+  {% endif %}
+</section>
 {% if not read_only and run.archived_at is none %}
 <form class="archive-form" method="post" action="/results/{{ run.id }}/archive">
   <button type="submit" class="btn">Archive</button>
