@@ -55,7 +55,12 @@ Browser --HTTPS--> Web app container (FastAPI + Jinja/HTMX + APScheduler)
   `permission.bash/edit/webfetch = allow`), runs
   `opencode run -m <provider>/<model> "<prompt>"` under a hard timeout,
   extracts the final fenced JSON block to `result.json` (falls back to raw
-  markdown), writes `review.log`.
+  markdown), exports opencode's own session (the model's reasoning/"thinking"
+  blocks, tool calls and full transcript) via
+  `opencode session list` + `opencode export` to `session.json`, and writes
+  `review.log`. `session.json` is stored on the run and downloadable from
+  its detail page (*Model session → Download session*); the export is
+  best-effort — capture failures are logged and never fail the run.
 - **Local models** — one shared long-lived `llama-server` (OpenAI-compatible
   `/v1`); local model profiles point OpenCode at it via `baseURL`.
 
@@ -299,8 +304,10 @@ pass), verify:
    containers via env only; the GitLab token reaches git (in the review
    container, and in the app when it clones/re-pulls the library checkouts)
    through a credential helper, never the command line.
-- **Log scrubbing** — review logs are scrubbed before storage: every secret
-  value is replaced with `***` (`app/orchestrator/run_review.py:scrub_secrets`).
+  - **Log scrubbing** — review logs, the raw-markdown result and the
+    session export are scrubbed before storage: every secret value is
+    replaced with `***`
+    (`app/orchestrator/run_review.py:scrub_secrets`).
  - **Untrusted MR code** — the reviewer runs *untrusted code* with
    `bash`/`edit` allowed inside an ephemeral, resource-capped container.
    Treat diffs as data, not instructions (prompt-injection aware); extra
