@@ -6,11 +6,13 @@ Runs are executed in-process via the app fixture's FakeOrchestrator
 (ORCHESTRATOR=fake, DISABLE_SCHEDULER=1); no external services involved.
 """
 
+from datetime import datetime
+
 import pytest
 from sqlalchemy import select
 
 from app.db import get_settings_row
-from app.models import MergeRequest, ModelProfile, ReviewRun
+from app.models import MergeRequest, ModelProfile, ReviewRun, RunStatus, ScheduledJob
 from app.orchestrator.fake_orchestrator import CANNED_SESSION_JSON, FakeOrchestrator
 from app.scheduler import worker
 from app.services import scheduling
@@ -198,3 +200,80 @@ def test_session_download_404_without_session(authed, app, db):
     detail = authed.get(f"/results/{run.id}")
     assert detail.status_code == 200
     assert "No session was captured for this run." in detail.text
+
+
+def _seed_running_run(db, log: str) -> ReviewRun:
+    """A run row left in ``running`` with a partial in-flight log (as the
+    worker's in-flight flushes would leave one) plus its job/MR/profile."""
+    row = get_settings_row(db)
+    row.gitlab_project = PROJECT
+    db.commit()
+    profile = ModelProfile(name="claude", provider="anthropic", model_id="claude-sonnet-4")
+    mr = MergeRequest(
+        project=PROJECT,
+        iid=11,
+        title="In flight",
+        author="dev@example.com",
+        source_branch="inflight",
+        target_branch="main",
+        sha="1" * 40,
+        web_url=f"https://gitlab.example.com/{PROJECT}/-/merge_requests/11",
+        state="opened",
+    )
+    db.add_all([profile, mr])
+    db.flush()
+    job = ScheduledJob(merge_request_id=mr.id, model_profile_id=profile.id)
+    db.add(job)
+    db.flush()
+    run = ReviewRun(
+        scheduled_job_id=job.id,
+        merge_request_id=mr.id,
+        model_profile_id=profile.id,
+        status=RunStatus.running.value,
+        started_at=datetime(2026, 9, 9, 10, 0, 0),
+        log=log,
+    )
+    db.add(run)
+    db.commit()
+    return run
+
+
+def test_running_detail_page_polls_the_live_log(authed, db):
+    """While a run is running, the detail page's log card carries the HTMX
+    poll attributes + the live hint and shows the in-flight log content."""
+    run = _seed_running_run(db, "cloning...\nThinking: checking the diff\n")
+
+    detail = authed.get(f"/results/{run.id}")
+    assert detail.status_code == 200
+    assert 'id="run-log"' in detail.text
+    assert f'hx-get="/results/{run.id}/log"' in detail.text
+    assert 'hx-trigger="every 2s"' in detail.text
+    assert "Live — updates every 2 s" in detail.text
+    # the in-flight log content (with the thinking block) is shown
+    assert "Thinking: checking the diff" in detail.text
+
+    # the log partial endpoint serves just the card, with the same polling
+    resp = authed.get(f"/results/{run.id}/log")
+    assert resp.status_code == 200
+    assert "Thinking: checking the diff" in resp.text
+    assert f'hx-get="/results/{run.id}/log"' in resp.text
+
+
+def test_finished_detail_page_does_not_poll(authed, db):
+    """A finished run's log card has no poll attributes, so the client stops
+    refreshing once the last swap lands."""
+    run = _run_completed(db)
+
+    detail = authed.get(f"/results/{run.id}")
+    assert detail.status_code == 200
+    assert 'id="run-log"' in detail.text
+    assert "hx-trigger" not in detail.text
+    assert "Live — updates every 2 s" not in detail.text
+
+    resp = authed.get(f"/results/{run.id}/log")
+    assert resp.status_code == 200
+    assert "hx-trigger" not in resp.text
+
+
+def test_log_endpoint_404_for_unknown_run(authed, db):
+    assert authed.get("/results/999/log").status_code == 404

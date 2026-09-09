@@ -11,12 +11,20 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_settings_row
 from app.deps import get_db
-from app.models import JobStatus, MergeRequest, ModelProfile, ScheduledJob, ScheduleType
+from app.models import (
+    JobStatus,
+    MergeRequest,
+    ModelProfile,
+    ReviewRun,
+    RunStatus,
+    ScheduledJob,
+    ScheduleType,
+)
 from app.routers.mrs import detail_context
 from app.services import review_service, scheduling
 
@@ -29,14 +37,30 @@ def _templates(request: Request):
     return request.app.state.templates
 
 
-def _jobs_with_refs(db: Session, *, status: JobStatus, schedule_type: ScheduleType | None) -> list[tuple]:
-    """Jobs joined with their MR and model profile, ordered by position."""
+def _jobs_with_refs(
+    db: Session, *, status: JobStatus, schedule_type: ScheduleType | None, with_run: bool = False
+) -> list[tuple]:
+    """Jobs joined with their MR and model profile, ordered by position.
+
+    With ``with_run`` (in-flight jobs) the run row is outer-joined too, so
+    the UI can link each running job to its live log (``/results/{run.id}``)
+    while a job that has no running run row yet (between claim and run
+    creation) still shows — with ``run`` = None and no link.
+    """
     stmt = (
         select(ScheduledJob, MergeRequest, ModelProfile)
         .join(MergeRequest, MergeRequest.id == ScheduledJob.merge_request_id)
         .join(ModelProfile, ModelProfile.id == ScheduledJob.model_profile_id)
         .where(ScheduledJob.status == status)
     )
+    if with_run:
+        stmt = stmt.outerjoin(
+            ReviewRun,
+            and_(
+                ReviewRun.scheduled_job_id == ScheduledJob.id,
+                ReviewRun.status == RunStatus.running.value,
+            ),
+        ).add_columns(ReviewRun)
     if schedule_type is not None:
         stmt = stmt.where(ScheduledJob.schedule_type == schedule_type)
     return list(db.execute(stmt.order_by(ScheduledJob.position, ScheduledJob.id)).all())
@@ -44,8 +68,9 @@ def _jobs_with_refs(db: Session, *, status: JobStatus, schedule_type: ScheduleTy
 
 def _queue_context(db: Session) -> dict[str, list[tuple]]:
     return {
-        "running": _jobs_with_refs(db, status=JobStatus.claimed, schedule_type=None)
-        + _jobs_with_refs(db, status=JobStatus.running, schedule_type=None),
+        # with_run: in-flight rows link to their live log (/results/{run.id})
+        "running": _jobs_with_refs(db, status=JobStatus.claimed, schedule_type=None, with_run=True)
+        + _jobs_with_refs(db, status=JobStatus.running, schedule_type=None, with_run=True),
         "queued": _jobs_with_refs(db, status=JobStatus.queued, schedule_type=ScheduleType.immediate),
         "nightly": _jobs_with_refs(db, status=JobStatus.queued, schedule_type=ScheduleType.nightly),
     }

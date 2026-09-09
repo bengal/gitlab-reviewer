@@ -106,6 +106,38 @@ def test_queue_page_renders_three_sections(authed, db):
     assert f"/queue/nightly/{n.id}/remove" in resp.text
 
 
+def test_running_row_links_to_live_log(authed, db):
+    """An in-flight job's row links to its run's live log; a job with no
+    running run row yet (between claim and run creation) still shows, just
+    without the link."""
+    profile = add_profile(db)
+    mr_a = add_mr(db, 1, "Alpha")
+    mr_b = add_mr(db, 2, "Beta")
+
+    # Job with a running run row -> gets the Live log link.
+    a = queue_job(db, mr_a, profile)
+    a.status = JobStatus.running.value
+    run_a = ReviewRun(
+        scheduled_job_id=a.id,
+        merge_request_id=mr_a.id,
+        model_profile_id=profile.id,
+        status=RunStatus.running.value,
+        log="",
+    )
+    db.add(run_a)
+    # Job claimed but no run row yet -> still shows, no link.
+    b = queue_job(db, mr_b, profile)
+    b.status = JobStatus.claimed.value
+    db.commit()
+
+    resp = authed.get("/queue")
+    assert resp.status_code == 200
+    assert "running" in resp.text  # both in-flight rows present
+    assert "claimed" in resp.text
+    assert f'/results/{run_a.id}' in resp.text  # Live log link -> run a
+    assert "Live log" in resp.text
+
+
 # -- POST /queue/reorder -------------------------------------------------------
 
 

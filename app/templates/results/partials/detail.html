@@ -76,13 +76,7 @@
   </details>
   {% endif %}
 </section>
-<section class="card">
-  <h2>Log</h2>
-  <details>
-    <summary>Full log</summary>
-    <pre class="run-log">{{ run.log or "(no log captured)" }}</pre>
-  </details>
-</section>
+{% include "results/partials/log.html" %}
 <section class="card">
   <h2>Model session</h2>
   <p class="hint">

@@ -127,6 +127,23 @@ def results_detail(request: Request, run_id: int, db: Session = Depends(get_db))
     return _templates(request).TemplateResponse(request, "results/detail.html", context)
 
 
+@router.get("/results/{run_id}/log", response_class=HTMLResponse)
+def results_log(request: Request, run_id: int, db: Session = Depends(get_db)) -> HTMLResponse:
+    """The run's log card only — the live-refresh endpoint.
+
+    The run detail page polls this while the run is ``running``
+    (results/partials/log.html, ``hx-trigger="every 2s"``): the in-flight
+    ``run.log`` snapshots written by the worker show the model's streamed
+    output (including its ``Thinking:`` blocks) as it arrives. Finished runs
+    render the same card without the polling attributes, so the client stops
+    refreshing once the last swap lands.
+    """
+    run = db.get(ReviewRun, run_id)
+    if run is None:
+        return _not_found(request, run_id)
+    return _templates(request).TemplateResponse(request, "results/partials/log.html", {"run": run})
+
+
 @router.get("/results/{run_id}/session")
 def results_session_download(request: Request, run_id: int, db: Session = Depends(get_db)):
     """Download the run's opencode session export (model thinking + full

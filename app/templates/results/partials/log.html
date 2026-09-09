@@ -1,0 +1,18 @@
+{# Log card for a run detail (shared by /results/{id} and /archive/{id}).
+   While the run is still running it re-fetches itself every 2s (HTMX), so
+   the model's streamed output — including its Thinking: blocks — is visible
+   live; finished runs render the same card without the trigger, which stops
+   the polling. Context: run. #}
+<section class="card" id="run-log"
+    {% if run.status == "running" %}hx-get="/results/{{ run.id }}/log" hx-trigger="every 2s" hx-target="#run-log" hx-swap="outerHTML"{% endif %}>
+  <h2>Log</h2>
+  {% if run.status == "running" %}
+  <p class="hint">Live — updates every 2 s while the review is running.</p>
+  <pre class="run-log">{{ run.log or "(no output yet)" }}</pre>
+  {% else %}
+  <details>
+    <summary>Full log</summary>
+    <pre class="run-log">{{ run.log or "(no log captured)" }}</pre>
+  </details>
+  {% endif %}
+</section>

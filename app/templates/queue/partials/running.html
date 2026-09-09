@@ -5,7 +5,7 @@
   <h2>Running <span class="hint">({{ running|length }})</span></h2>
   {% if running %}
   <ul class="queue-list">
-    {% for job, mr, profile in running %}
+    {% for job, mr, profile, run in running %}
     <li class="queue-row">
       <span class="queue-status">{{ job.status }}</span>
       <span class="queue-mr">
@@ -13,6 +13,9 @@
       </span>
       <span class="queue-model">{{ profile.name }}</span>
       <span class="queue-actions">
+        {% if run %}
+        <a class="btn small" href="/results/{{ run.id }}">Live log</a>
+        {% endif %}
         <button type="button" class="btn small danger" hx-post="/queue/{{ job.id }}/cancel"
                 hx-target="#queue-page" hx-swap="outerHTML"
                 hx-confirm="Cancel this running review?">Cancel</button>
