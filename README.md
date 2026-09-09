@@ -22,8 +22,8 @@ Browser --HTTPS--> Web app container (FastAPI + Jinja/HTMX + APScheduler)
                    PostgreSQL                Review-runner container (ephemeral)
                                                - git clone target @ MR branch + base
                                                - library checkouts mounted read-only
-                                               - opencode run -m provider/model "<prompt>"
-                                               - emit structured JSON + logs
+                                                - opencode run --thinking -m provider/model "<prompt>"
+                                                - emit structured JSON + stream logs live
                                                     |  /v1 (local models)
                                                     v
                                         shared llama-server (OpenAI-compatible)
@@ -53,14 +53,18 @@ Browser --HTTPS--> Web app container (FastAPI + Jinja/HTMX + APScheduler)
   (the entrypoint clones as a fallback when a checkout is not mounted);
   then it renders `opencode.json` (provider block;
   `permission.bash/edit/webfetch = allow`), runs
-  `opencode run -m <provider>/<model> "<prompt>"` under a hard timeout,
-  extracts the final fenced JSON block to `result.json` (falls back to raw
-  markdown), exports opencode's own session (the model's reasoning/"thinking"
-  blocks, tool calls and full transcript) via
-  `opencode session list` + `opencode export` to `session.json`, and writes
-  `review.log`. `session.json` is stored on the run and downloadable from
-  its detail page (*Model session → Download session*); the export is
-  best-effort — capture failures are logged and never fail the run.
+   `opencode run --thinking -m <provider>/<model> "<prompt>"` under a hard
+   timeout, streaming the model's output (including its `Thinking:` blocks)
+   line by line to `review.log` — which the app persists as it arrives and
+   the run detail page shows live — then extracting the final fenced JSON
+   block to `result.json` (falls back to raw markdown). It also exports
+   opencode's own session (the model's reasoning/"thinking" blocks, tool
+   calls and full transcript) via `opencode session list` + `opencode export`
+   to `session.json`, stored on the run and downloadable from its detail
+   page (*Model session → Download session*); both the session export and the
+   live log are best-effort — capture failures are logged and never fail the
+   run. `--thinking` needs opencode ≥ 1.18.30 (the pinned version); an older
+   opencode that rejects the flag is retried without it.
 - **Local models** — one shared long-lived `llama-server` (OpenAI-compatible
   `/v1`); local model profiles point OpenCode at it via `baseURL`.
 
@@ -287,6 +291,11 @@ pass), verify:
 - [ ] **Reorder queue** — schedule two or more immediate reviews, drag rows
       in *Queue* (or use Top/Bottom); the order persists after reload and
       the next pump claims jobs in the new order.
+- [ ] **Live log** — while a review is running, its *Results* detail page's
+      **Log** card updates every 2 s (open, "Live" hint) showing the model's
+      streamed output as it arrives (including `Thinking:` blocks); the
+      *Queue* **Running** row has a **Live log** link to it; the card stops
+      polling once the run finishes.
 - [ ] **Archive + inspect** — *Results* → **Archive** on a run; it leaves
       the results list, appears in *Archive*, and its detail stays readable
       (read-only, no archive button).
