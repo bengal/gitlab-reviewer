@@ -78,6 +78,7 @@ def test_build_env_core_vars(app, db, mr, profile, settings_row):
     assert env["OPENCODE_MODEL"] == "claude-sonnet-4"
     assert env["RESULT_PATH"] == "/out/result.json"
     assert env["LOG_PATH"] == "/out/review.log"
+    assert env["SESSION_PATH"] == "/out/session.json"
     assert env["REVIEW_TIMEOUT_SECONDS"].isdigit()
     assert "Review the diff" in env["REVIEW_PROMPT"]
     assert "feature-1" in env["REVIEW_PROMPT"]  # context appended
@@ -370,6 +371,22 @@ def test_podman_success_path_streams_and_reads_results(app, db, mr, profile, set
             json.dump({"summary": "ok", "findings": {"critical": []}}, fh)
         with open(f"{src}/result.md", "w", encoding="utf-8") as fh:
             fh.write("# review\nlooks fine\n")
+        with open(f"{src}/session.json", "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "info": {"id": "ses_1", "title": "review"},
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "parts": [
+                                {"type": "reasoning", "text": f"checking diff with {GITLAB_TOKEN}"},
+                                {"type": "text", "text": "ok"},
+                            ],
+                        }
+                    ],
+                },
+                fh,
+            )
         return _FakeProc(["cid-abc123", f"cloning repo with {GITLAB_TOKEN}", "done"], exit_code=0)
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -381,6 +398,12 @@ def test_podman_success_path_streams_and_reads_results(app, db, mr, profile, set
     assert outcome.error is None
     assert outcome.result_json == {"summary": "ok", "findings": {"critical": []}}
     assert outcome.result_markdown == "# review\nlooks fine\n"
+    # the session export (model thinking + transcript) is captured from /out
+    # (raw here; the service layer scrubs it of the run's secrets before
+    # storage, like result_json — see test_session_json_is_scrubbed_before_storage)
+    assert outcome.session_json is not None
+    assert outcome.session_json["info"]["id"] == "ses_1"
+    assert outcome.session_json["messages"][0]["parts"][0]["type"] == "reasoning"
     assert "cid-abc123" in logs  # first line = container id, streamed
     # secret streamed by the container is scrubbed before log_chunk
     joined_log = "".join(logs)

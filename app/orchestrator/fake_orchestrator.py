@@ -25,14 +25,45 @@ CANNED_RESULT_JSON: dict = {
     "questions": [],
 }
 
+# A miniature stand-in for ``opencode export <sessionID>``: the shape the
+# review-runner's session capture produces (info + messages, with a
+# reasoning part so the "model thinking" UI path is exercised too).
+CANNED_SESSION_JSON: dict = {
+    "info": {
+        "id": "ses_fake0000000000000000000000",
+        "title": "fake review session",
+        "agent": "build",
+        "model": {"id": "fake-model", "providerID": "fake"},
+        "version": "fake",
+    },
+    "messages": [
+        {
+            "role": "user",
+            "parts": [{"type": "text", "text": "Review the MR diff."}],
+        },
+        {
+            "role": "assistant",
+            "parts": [
+                {
+                    "type": "reasoning",
+                    "text": "Thinking: the diff is small, check the one changed file.",
+                },
+                {"type": "text", "text": "Automated fake review: no issues found."},
+            ],
+        },
+    ],
+}
+
 
 @dataclass
 class FakeOutcome:
-    """A canned RunOutcome; the default is success with CANNED_RESULT_JSON."""
+    """A canned RunOutcome; the default is success with CANNED_RESULT_JSON
+    plus CANNED_SESSION_JSON."""
 
     exit_code: int = 0
     result_json: dict | None = field(default_factory=lambda: CANNED_RESULT_JSON)
     result_markdown: str | None = None
+    session_json: dict | None = field(default_factory=lambda: CANNED_SESSION_JSON)
     error: str | None = None
     timed_out: bool = False
 
@@ -52,9 +83,18 @@ class FakeOrchestrator:
         self._outcome = outcome
 
     @classmethod
-    def success(cls, *, result_json: dict | None = None, delay: float = 0.0) -> "FakeOrchestrator":
+    def success(
+        cls,
+        *,
+        result_json: dict | None = None,
+        session_json: dict | None = None,
+        delay: float = 0.0,
+    ) -> "FakeOrchestrator":
         return cls(
-            outcome=FakeOutcome(result_json=result_json if result_json is not None else CANNED_RESULT_JSON),
+            outcome=FakeOutcome(
+                result_json=result_json if result_json is not None else CANNED_RESULT_JSON,
+                session_json=session_json if session_json is not None else CANNED_SESSION_JSON,
+            ),
             delay=delay,
         )
 
@@ -64,7 +104,11 @@ class FakeOrchestrator:
     ) -> "FakeOrchestrator":
         return cls(
             outcome=FakeOutcome(
-                exit_code=exit_code, result_json=None, result_markdown=None, error=error
+                exit_code=exit_code,
+                result_json=None,
+                result_markdown=None,
+                session_json=None,
+                error=error,
             ),
             delay=delay,
         )
@@ -76,6 +120,7 @@ class FakeOrchestrator:
                 exit_code=124,
                 result_json=None,
                 result_markdown=None,
+                session_json=None,
                 error="simulated timeout",
                 timed_out=True,
             ),
@@ -112,6 +157,7 @@ class FakeOrchestrator:
                 exit_code=self._outcome.exit_code,
                 result_json=self._outcome.result_json,
                 result_markdown=self._outcome.result_markdown,
+                session_json=self._outcome.session_json,
                 error=self._outcome.error,
                 timed_out=self._outcome.timed_out,
             )

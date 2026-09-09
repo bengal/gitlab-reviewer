@@ -205,3 +205,53 @@ def test_result_json_is_scrubbed_before_storage(app, db):
     assert "***" in flat
     # the scrub kept the structure intact
     assert run.result_json["findings"]["important"][0]["file"] == "src/leak.py"
+
+
+class LeakySessionFake(FakeOrchestrator):
+    """FakeOrchestrator whose session export (the model's thinking +
+    transcript) echoes both secrets — simulates the untrusted opencode
+    export quoting material it saw during the run."""
+
+    def run_review(self, run, job, *, log_chunk=None) -> RunOutcome:
+        return RunOutcome(
+            exit_code=0,
+            session_json={
+                "info": {"id": "ses_leak", "title": "leaky"},
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "parts": [
+                            {
+                                "type": "reasoning",
+                                "text": f"the diff contains {GITLAB_TOKEN} and {API_KEY}",
+                            },
+                            {"type": "text", "text": "done"},
+                        ],
+                    }
+                ],
+            },
+        )
+
+
+def test_session_json_is_scrubbed_before_storage(app, db):
+    """Hardening regression: a secret echoed into the session export must not
+    reach the DB (it is downloadable from the run detail page)."""
+    _row, profile, mr = _seed(db)
+    app.state.orchestrator = LeakySessionFake()
+
+    scheduling.enqueue(db, mr=mr, profile=profile, schedule_type=ScheduleType.immediate)
+    worker.pump_once()
+    worker.drain()
+    db.expire_all()
+
+    run = db.scalar(select(ReviewRun))
+    assert run is not None
+    assert run.status == RunStatus.success.value
+    assert run.session_json is not None
+    flat = json.dumps(run.session_json)
+    assert GITLAB_TOKEN not in flat
+    assert API_KEY not in flat
+    assert "***" in flat
+    # the scrub kept the structure intact
+    assert run.session_json["info"]["id"] == "ses_leak"
+    assert run.session_json["messages"][0]["parts"][0]["type"] == "reasoning"

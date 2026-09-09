@@ -15,6 +15,7 @@ from app.services.prompt import _load_mr, build_review_prompt
 
 RESULT_PATH = "/out/result.json"
 LOG_PATH = "/out/review.log"
+SESSION_PATH = "/out/session.json"
 
 # Secrets shorter than this are not worth scrubbing for: replacing them would
 # mangle the log (e.g. a single-digit value) for little gain.
@@ -75,6 +76,7 @@ def build_env(
         "REVIEW_TIMEOUT_SECONDS": str(cfg.review_timeout_seconds),
         "RESULT_PATH": RESULT_PATH,
         "LOG_PATH": LOG_PATH,
+        "SESSION_PATH": SESSION_PATH,
     }
     api_key = resolve_api_key(profile)
     if api_key:

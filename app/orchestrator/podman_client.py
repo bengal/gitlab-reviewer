@@ -191,6 +191,7 @@ class PodmanOrchestrator:
             timed_out, exit_code = self._run_streaming(argv, env, emit)
             result_json = self._read_json(out_dir / "result.json")
             result_markdown = self._read_text(out_dir / "result.md")
+            session_json = self._read_json(out_dir / "session.json")
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             return RunOutcome(exit_code=125, error=f"podman run failed: {exc}")
         finally:
@@ -207,6 +208,7 @@ class PodmanOrchestrator:
             exit_code=exit_code,
             result_json=result_json,
             result_markdown=result_markdown,
+            session_json=session_json,
             error=error,
             timed_out=timed_out,
         )

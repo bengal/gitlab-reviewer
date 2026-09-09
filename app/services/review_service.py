@@ -103,6 +103,8 @@ def execute_job(db: Session, run: ReviewRun, job: ScheduledJob) -> None:
         outcome.result_markdown = scrub_secrets(outcome.result_markdown, secrets)
     if outcome.result_json is not None:
         outcome.result_json = scrub_json(outcome.result_json, secrets)
+    if outcome.session_json is not None:
+        outcome.session_json = scrub_json(outcome.session_json, secrets)
     container_id = _extract_container_id(log_lines)
     if container_id:
         run.container_id = container_id
@@ -172,6 +174,7 @@ def _apply_outcome(
     run.exit_code = outcome.exit_code
     run.result_json = outcome.result_json
     run.result_markdown = outcome.result_markdown
+    run.session_json = outcome.session_json
     run.error_message = outcome.error
     run.finished_at = _now()
     job.status = JobStatus.done.value if status == RunStatus.success.value else JobStatus.failed.value

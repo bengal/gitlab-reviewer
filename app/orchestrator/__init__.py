@@ -29,6 +29,9 @@ class RunOutcome:
     exit_code: int
     result_json: dict | None = None
     result_markdown: str | None = None
+    # opencode's session export for this run (reasoning/thinking blocks, tool
+    # calls, full transcript) — None when the run produced no session capture.
+    session_json: dict | None = None
     error: str | None = None
     timed_out: bool = False
 
