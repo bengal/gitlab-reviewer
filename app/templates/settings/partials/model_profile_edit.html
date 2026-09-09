@@ -1,0 +1,59 @@
+{# Edit form for one model profile. Rendered by GET /settings/models/{id}/edit
+   and re-rendered by POST /settings/models/{id} on validation errors. Root
+   element id="model-profiles" so the HTMX swap target is the same as for the
+   list. The API key is never shown: leave it empty to keep the stored one. #}
+<section class="card" id="model-profiles">
+  <h2>Edit profile</h2>
+  {% if profile_errors %}
+  <div class="error">
+    {% for err in profile_errors %}
+    <p>{{ err }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form method="post" action="/settings/models/{{ profile.id }}" class="profile-form"
+        hx-post="/settings/models/{{ profile.id }}" hx-target="#model-profiles" hx-swap="outerHTML">
+    <div class="profile-grid">
+      <label for="profile_name">Name</label>
+      <input type="text" id="profile_name" name="name"
+             value="{{ profile_raw.get('name', '') }}" placeholder="claude">
+      <label for="profile_provider">Provider</label>
+      <select id="profile_provider" name="provider">
+        <option value="anthropic" {{ 'selected' if profile_raw.get('provider') == 'anthropic' else '' }}>anthropic</option>
+        <option value="local" {{ 'selected' if profile_raw.get('provider') == 'local' else '' }}>local (OpenAI-compatible /v1)</option>
+      </select>
+      <label for="profile_model_id">Model ID</label>
+      <input type="text" id="profile_model_id" name="model_id"
+             value="{{ profile_raw.get('model_id', '') }}" placeholder="claude-sonnet-4-20250514">
+      <label for="profile_base_url">Base URL (local only)</label>
+      <input type="text" id="profile_base_url" name="base_url"
+             value="{{ profile_raw.get('base_url', '') }}" placeholder="http://llama-server:8080/v1">
+      <label for="profile_api_key">API key</label>
+      <input type="password" id="profile_api_key" name="api_key" autocomplete="new-password"
+             value="" placeholder="{{ 'A key is set — leave empty to keep it' if key_set else 'encrypted at rest; leave empty for none' }}">
+      <label for="profile_api_key_env">API key env var (optional)</label>
+      <input type="text" id="profile_api_key_env" name="api_key_env"
+             value="{{ profile_raw.get('api_key_env', '') }}" placeholder="ANTHROPIC_API_KEY">
+      <label for="profile_context_window">Context window, tokens
+        <span class="hint">(local models: the server's ctx-size, e.g. 220000 —
+        enables opencode's auto-compaction; leave empty for known models)</span>
+      </label>
+      <input type="number" id="profile_context_window" name="context_window" min="1" step="1"
+             value="{{ profile_raw.get('context_window', '') }}" placeholder="220000">
+    </div>
+    <label class="check">
+      <input type="checkbox" name="is_default" value="true"
+             {{ 'checked' if profile_raw.get('is_default') else '' }}>
+      Use as the default profile
+    </label>
+    <label for="profile_extra_json">Extra opencode.json
+      <span class="hint">(JSON object merged into the rendered config)</span>
+    </label>
+    <textarea id="profile_extra_json" name="extra_opencode_json" rows="3"
+              spellcheck="false">{{ profile_raw.get('extra_opencode_json', '{}') }}</textarea>
+    <button type="submit" class="btn">Save changes</button>
+    <button type="button" class="btn" hx-get="/settings/models/section"
+            hx-target="#model-profiles" hx-swap="outerHTML">Cancel</button>
+  </form>
+</section>

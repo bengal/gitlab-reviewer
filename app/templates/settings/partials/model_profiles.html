@@ -4,9 +4,12 @@
    presence (or the env-var name) is shown, never the decrypted value. #}
 <section class="card" id="model-profiles">
   <h2>Model profiles</h2>
-  {% if delete_error %}
+{% if message %}
+<p class="hint">{{ message }}</p>
+{% endif %}
+{% if delete_error %}
   <p class="error">{{ delete_error }}</p>
-  {% endif %}
+{% endif %}
   {% if profile_errors %}
   <div class="error">
     {% for err in profile_errors %}
@@ -37,9 +40,13 @@
         <td>{{ p.context_window or "—" }}</td>
         <td>{{ p.key_display }}</td>
         <td>
-          <button type="button" class="btn small danger" hx-post="/settings/models/{{ p.id }}/delete"
-                  hx-target="#model-profiles" hx-swap="outerHTML"
-                  hx-confirm="Delete profile {{ p.name }}?">Delete</button>
+          <div class="queue-actions">
+            <button type="button" class="btn small" hx-get="/settings/models/{{ p.id }}/edit"
+                    hx-target="#model-profiles" hx-swap="outerHTML">Edit</button>
+            <button type="button" class="btn small danger" hx-post="/settings/models/{{ p.id }}/delete"
+                    hx-target="#model-profiles" hx-swap="outerHTML"
+                    hx-confirm="Delete profile {{ p.name }}?">Delete</button>
+          </div>
         </td>
       </tr>
       {% endfor %}

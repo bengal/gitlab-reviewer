@@ -219,6 +219,7 @@ def _render_profiles(
     delete_error: str | None = None,
     profile_raw: dict[str, object] | None = None,
     profile_errors: list[str] | None = None,
+    message: str | None = None,
 ) -> HTMLResponse:
     """Render just the model-profiles section (HTMX swap target)."""
     return _templates(request).TemplateResponse(
@@ -229,8 +230,139 @@ def _render_profiles(
             "delete_error": delete_error,
             "profile_raw": profile_raw,
             "profile_errors": profile_errors,
+            "message": message,
         },
     )
+
+
+def _edit_profile_raw(profile: ModelProfile) -> dict[str, object]:
+    """The edit form's initial values for a saved profile (API key masked out)."""
+    return {
+        "name": profile.name,
+        "provider": profile.provider,
+        "model_id": profile.model_id,
+        "base_url": profile.base_url or "",
+        "api_key_env": profile.api_key_env or "",
+        "is_default": profile.is_default,
+        "extra_opencode_json": (
+            json.dumps(profile.extra_opencode_json, indent=2) if profile.extra_opencode_json else "{}"
+        ),
+        "context_window": str(profile.context_window) if profile.context_window else "",
+    }
+
+
+def _render_edit_profile(
+    request: Request,
+    db: Session,
+    profile: ModelProfile,
+    raw: dict[str, object] | None = None,
+    errors: list[str] | None = None,
+) -> HTMLResponse:
+    """Render the edit form for one profile (HTMX swap target)."""
+    return _templates(request).TemplateResponse(
+        request,
+        "settings/partials/model_profile_edit.html",
+        {
+            "profile": profile,
+            "profile_raw": raw if raw is not None else _edit_profile_raw(profile),
+            "profile_errors": errors,
+            "key_set": bool(profile.api_key),
+        },
+    )
+
+
+@router.get("/settings/models/section", response_class=HTMLResponse)
+def settings_models_section(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    """The profiles section on its own (HTMX swap target, e.g. cancel an edit)."""
+    return _render_profiles(request, db)
+
+
+@router.get("/settings/models/{profile_id}/edit", response_class=HTMLResponse)
+def settings_model_edit(request: Request, profile_id: int, db: Session = Depends(get_db)) -> HTMLResponse:
+    profile = db.get(ModelProfile, profile_id)
+    if profile is None:
+        return _render_profiles(request, db, delete_error=f"No profile with id {profile_id}.")
+    return _render_edit_profile(request, db, profile)
+
+
+@router.post("/settings/models/{profile_id}", response_class=HTMLResponse)
+def settings_model_update(
+    request: Request,
+    profile_id: int,
+    db: Session = Depends(get_db),
+    name: str = Form(""),
+    provider: str = Form("anthropic"),
+    model_id: str = Form(""),
+    base_url: str = Form(""),
+    api_key: str = Form(""),
+    api_key_env: str = Form(""),
+    is_default: bool = Form(False),
+    extra_opencode_json: str = Form("{}"),
+    context_window: str = Form(""),
+) -> HTMLResponse:
+    """Update a profile. The API key is only overwritten when a non-empty
+    value is submitted (it is masked on read)."""
+    profile = db.get(ModelProfile, profile_id)
+    if profile is None:
+        return _render_profiles(request, db, delete_error=f"No profile with id {profile_id}.")
+    raw = {
+        "name": name,
+        "provider": provider,
+        "model_id": model_id,
+        "base_url": base_url,
+        "api_key_env": api_key_env,
+        "is_default": is_default,
+        "extra_opencode_json": extra_opencode_json,
+        "context_window": context_window,
+    }
+    errors: list[str] | None = None
+    try:
+        window = int(context_window) if context_window.strip() else None
+        form = ModelProfileForm(
+            name=name,
+            provider=provider,
+            model_id=model_id,
+            base_url=base_url,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            is_default=is_default,
+            extra_opencode_json=extra_opencode_json,
+            context_window=window,
+        )
+    except ValidationError as exc:
+        errors = [f"{('.'.join(str(part) for part in err['loc']))}: {err['msg']}" for err in exc.errors()]
+    except ValueError:
+        errors = ["context_window must be a positive integer (tokens)"]
+    if errors is not None:
+        return _render_edit_profile(request, db, profile, raw=raw, errors=errors)
+
+    profile.name = form.name
+    profile.provider = form.provider
+    profile.model_id = form.model_id
+    profile.base_url = form.base_url or None
+    if form.api_key.strip():
+        profile.api_key = encrypt_secret(form.api_key.strip())
+    profile.api_key_env = form.api_key_env.strip() or None
+    profile.extra_opencode_json = form.extra_opencode_json
+    profile.context_window = form.context_window
+    if form.is_default:
+        for other in db.scalars(select(ModelProfile).where(ModelProfile.is_default.is_(True))):
+            if other.id != profile.id:
+                other.is_default = False
+    profile.is_default = form.is_default
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raw_no_key = dict(raw, api_key="")
+        return _render_edit_profile(
+            request,
+            db,
+            profile,
+            raw=raw_no_key,
+            errors=[f"name: a profile named {form.name!r} already exists"],
+        )
+    return _render_profiles(request, db, message=f"Model profile {form.name!r} updated.")
 
 
 @router.post("/settings/models", response_class=HTMLResponse)

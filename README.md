@@ -116,7 +116,9 @@ Open http://127.0.0.1:8000 and do the one-time UI setup:
 3. **Settings → Model profiles**: add one per model you want to offer —
    e.g. `anthropic` provider + `claude-...` model id, or `local` provider +
    your `llama-server` model id with `base_url` = `LLAMA_BASE_URL` from
-   `.env`. Mark one as default.
+   `.env`. Mark one as default. Each profile row has **Edit** (re-open the
+   form with the current values; the API key stays masked — leave it empty
+   to keep it) and **Delete** buttons.
 4. **MRs → Refresh** to load open MRs, then *Schedule review* on one.
 
 > Tip: for the very first pass set `ORCHESTRATOR=fake` in `.env` — reviews
