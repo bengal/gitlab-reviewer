@@ -17,12 +17,13 @@ post is logged and appended to ``run.log`` but never fails the run.
 
 import logging
 import re
+import time
 from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db import get_settings_row
+from app.db import get_db_session, get_settings_row
 from app.models import JobStatus, MergeRequest, ModelProfile, ReviewRun, RunStatus, ScheduledJob
 from app.orchestrator import RunOutcome
 from app.orchestrator.run_review import build_env, scrub_json, scrub_secrets, secret_env_values
@@ -36,6 +37,10 @@ log = logging.getLogger(__name__)
 # podman prints the container id as the first stdout line of `podman run`;
 # anything else (warning banners, log output) is skipped.
 _CONTAINER_ID = re.compile(r"^[0-9a-f]{64}$")
+
+# Minimum gap between in-flight run.log flushes to the DB (the UI polls at a
+# similar cadence; faster would only add write pressure).
+_LOG_FLUSH_SECONDS = 2.0
 
 
 def _now() -> datetime:
@@ -84,9 +89,33 @@ def execute_job(db: Session, run: ReviewRun, job: ScheduledJob) -> None:
     env = build_env(job, profile, settings_row, mr=mr)
     secrets = secret_env_values(env)
     log_lines: list[str] = []
+    # The podman orchestrator emits log chunks from its reader thread (not
+    # this worker's), and a review can run for a long time — so flush the
+    # accumulated log to the run row while it is in flight, time-gated to at
+    # most one DB commit per _LOG_FLUSH_SECONDS. That is what makes the
+    # run's log (and the model's live output in it) visible in the UI while
+    # the review is still running. A final commit writes the complete log
+    # anyway, so the flushes only add intermediate snapshots.
+    flush_state = {"last": 0.0}
+
+    def flush_log_inflight() -> None:
+        now = time.monotonic()
+        if not log_lines or now - flush_state["last"] < _LOG_FLUSH_SECONDS:
+            return
+        try:
+            with get_db_session() as fresh:
+                row = fresh.get(ReviewRun, run.id)
+                if row is not None:
+                    row.log = "\n".join(log_lines) + "\n"
+                    fresh.commit()
+        except Exception:
+            log.exception("could not flush in-flight log for run %s", run.id)
+        else:
+            flush_state["last"] = now
 
     def log_chunk(chunk: str) -> None:
         log_lines.append(scrub_secrets(chunk, secrets))
+        flush_log_inflight()
 
     try:
         outcome = orchestrator.run_review(run, job, log_chunk=log_chunk)
