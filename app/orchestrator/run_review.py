@@ -50,7 +50,7 @@ def build_env(
     *,
     mr: MergeRequest | None = None,
 ) -> dict[str, str]:
-    """Environment for the review container (see MILESTONES M5 for the list).
+    """Environment for the review container.
 
     ``settings`` is the DB settings singleton row (GitLab URL/project/token,
     default prompt); process-level config (llama URL, timeout, fallback key)

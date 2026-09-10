@@ -20,6 +20,7 @@ _ALL_VARS = (
 def _clean_env(monkeypatch) -> None:
     for var in _ALL_VARS:
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("SESSION_SECRET", "test-session-secret")
 
 
 def test_defaults(monkeypatch):
@@ -43,6 +44,13 @@ def test_env_override(monkeypatch):
     assert settings.database_url == "sqlite:///./other.sqlite3"
     assert settings.orchestrator == "fake"
     assert settings.llama_base_url == "http://llama:8080"
+
+
+def test_session_secret_required(monkeypatch):
+    _clean_env(monkeypatch)
+    monkeypatch.delenv("SESSION_SECRET", raising=False)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_invalid_orchestrator_rejected(monkeypatch):

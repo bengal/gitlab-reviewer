@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Entrypoint for the review-runner container (Python stdlib only).
 
-Implements the MILESTONES.md "Milestone 5" entrypoint steps exactly:
+Steps:
 
 1. read the run environment (see ``app/orchestrator/run_review.build_env``);
  2. clone the target repo into ``/work/target`` with a git credential helper

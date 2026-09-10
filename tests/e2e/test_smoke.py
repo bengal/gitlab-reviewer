@@ -1,4 +1,4 @@
-"""Full in-process e2e smoke (MILESTONES M7).
+"""Full in-process e2e smoke.
 
 Fresh app (fake orchestrator, scheduler disabled, tmp DB) exercising the whole
 happy path in one scenario:

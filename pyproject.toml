@@ -2,6 +2,9 @@
 name = "gitlab-mr-review"
 version = "0.1.0"
 description = "Self-hosted LLM-driven code review of GitLab merge requests"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Beniamino Galvani", email = "b.galvani@gmail.com" }]
 requires-python = ">=3.13"
 dependencies = [
     "fastapi",

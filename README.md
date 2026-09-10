@@ -17,7 +17,7 @@ Browser --HTTPS--> Web app container (FastAPI + Jinja/HTMX + APScheduler)
                       |  QueueWorker (concurrency semaphore)
                       |  Orchestrator --mounts--> host podman.sock
                       |                              |
-                      |                     podman run --rm review-runner
+                       |                     podman run review-runner
                       v                              v
                    PostgreSQL                Review-runner container (ephemeral)
                                                - git clone target @ MR branch + base
@@ -39,10 +39,13 @@ Browser --HTTPS--> Web app container (FastAPI + Jinja/HTMX + APScheduler)
   running review in the UI (the queue page also offers a Cancel button for
   in-flight reviews).
   Shared-password login → itsdangerous-signed session cookie.
-- **Orchestrator** — `podman run --rm` of a fixed, allowlisted review-runner
+- **Orchestrator** — `podman run` of a fixed, allowlisted review-runner
   image through the host's **rootless user podman socket** (never
   `--privileged`; `--memory=2g --cpus=2 --pids-limit=256`
   `--security-opt no-new-privileges`), one sibling container per review.
+  Containers are not `--rm`: a successful run's container is removed once
+  its results are read, while failed/timed-out runs are kept for inspection
+  (stale exited containers are purged after 24 h).
   `ORCHESTRATOR=fake` swaps in a deterministic in-process backend for
   dev/tests.
 - **Review-runner** (`containers/review-runner/`) — stdlib-only entrypoint:
@@ -101,9 +104,9 @@ Fill in the three required secrets in `.env` (full reference in
 # 1. Shared app password -> PBKDF2 hash  (APP_PASSWORD_HASH)
 uv run python -c "from app.security import hash_password; print(hash_password('your-password'))"
 # 2. Session cookie signing key          (SESSION_SECRET)
-python -c "import secrets; print(secrets.token_urlsafe(32))"
+uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
 # 3. Key for encrypting secrets at rest  (SECRET_ENC_KEY)
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
 Create the database (SQLite is the default — zero setup, see
@@ -310,8 +313,9 @@ pass), verify:
   only (never the rootful daemon socket), the app image runs non-root, every
   route is behind the shared-password gate, the review image is a **fixed
   allowlist** (`REVIEW_IMAGE` / `REVIEW_IMAGE_ALLOWLIST` — any other image is
-  refused), and runs are `--rm` with `--memory=2g --cpus=2 --pids-limit=256`
-  `--security-opt no-new-privileges` — **never `--privileged`**.
+  refused), and every run is resource-capped (`--memory=2g --cpus=2
+  --pids-limit=256`, `--security-opt no-new-privileges`, **never
+  `--privileged**).
  - **Secrets at rest** — the GitLab token and model API keys are
    Fernet-encrypted in the DB (`SECRET_ENC_KEY`); they are passed to review
    containers via env only; the GitLab token reaches git (in the review

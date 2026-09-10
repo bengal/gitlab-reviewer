@@ -1,4 +1,4 @@
-"""Security verification (MILESTONES M7) — five checks:
+"""Security verification — five checks:
 
 1. unauthenticated requests to every major route redirect to /login;
 2. the gitlab token / api key never appear in the podman argv (they appear

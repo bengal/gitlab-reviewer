@@ -16,7 +16,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     database_url: str = "sqlite:///./dev.sqlite3"
-    session_secret: str = "insecure-dev-session-secret"
+    # Signs the session cookie; deliberately required (no default).
+    session_secret: str
     app_password_hash: str = ""
     secret_enc_key: str = ""
     llama_base_url: str | None = None

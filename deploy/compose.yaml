@@ -1,7 +1,6 @@
 # GitLab MR auto-review tool — podman compose deployment.
 #
-# Three services on one shared bridge network; NO host ports are published
-# (see PLAN.md "Deployment"):
+# Three services on one shared bridge network; NO host ports are published:
 #
 #   app           FastAPI web app + in-process scheduler (deploy/Containerfile)
 #   llama-server  shared local model endpoint, OpenAI-compatible /v1 (placeholder image)
