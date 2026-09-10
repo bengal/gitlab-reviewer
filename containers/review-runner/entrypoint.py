@@ -590,9 +590,12 @@ def _capture_session() -> None:
     nearest directory at or above the work dir with a session database —
     not always the work dir itself, so the lookup walks up from
     WORK_DIR/target to WORK_DIR (then to the filesystem root as a last
-    resort). Best effort: any failure (no sessions, opencode not exporting,
-    a non-JSON export) is logged and swallowed so it can never fail the run
-    — the review result is what matters, the session is diagnostic.
+    resort). Best effort: any failure (no sessions, opencode not exporting)
+    is logged and swallowed so it can never fail the run — the review
+    result is what matters, the session is diagnostic. A non-JSON export
+    (opencode has been observed exiting 0 while printing truncated JSON) is
+    not discarded: the raw output is preserved in a JSON envelope, so the
+    transcript is still inspectable and the exporter bug reportable.
     """
     if shutil.which("opencode") is None:
         log("session capture skipped: opencode not on PATH")
@@ -648,11 +651,16 @@ def _capture_session() -> None:
     if export.returncode != 0:
         log(f"session capture failed: `opencode export {session_id}` exit {export.returncode}")
         return
+    raw = export.stdout or ""
     try:
-        data = json.loads(export.stdout or "")
+        data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        log(f"session capture failed: unparsable export: {exc}")
-        return
+        log(f"session export was not valid JSON ({exc}); preserving the raw output")
+        data = {
+            "warning": "opencode export produced invalid JSON; the raw output is preserved below.",
+            "parse_error": str(exc),
+            "raw": raw,
+        }
     if not isinstance(data, dict):
         log("session capture: export is not a JSON object")
         return

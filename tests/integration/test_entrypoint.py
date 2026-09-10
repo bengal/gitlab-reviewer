@@ -13,7 +13,10 @@ d) fake opencode exits 1 after dropping a session log file -> the tail of
    that log is appended (scrubbed) to review.log, exit 1;
 e) after the run, the entrypoint locates the session opencode "created" in
    the run's working directory (via `opencode session list`) and exports it
-   to /out/session.json — with the run's secrets scrubbed out.
+   to /out/session.json — with the run's secrets scrubbed out;
+f) a truncated (invalid-JSON) `opencode export` output is preserved as a
+   raw JSON envelope (scrubbed) instead of leaving the run without a
+   session at all.
 """
 
 import json
@@ -130,6 +133,14 @@ def fake_opencode(tmp_path):
         "    exit 0\n"
         "    ;;\n"
         "  export)\n"
+        '    if [ -n "${FAKE_OPENCODE_EXPORT_TRUNCATED:-}" ]; then\n'
+        # Truncated mid-string with no trailing newline, like the observed
+        # opencode failure: json must fail with "Unterminated string".
+        '      printf "{\\"info\\": {\\"id\\": \\"$2\\"}, \\"messages\\": [{\\"parts\\": ["\n'
+        '      printf "{\\"type\\": \\"text\\", \\"text\\": \\"thinking with secret "\n'
+        '      printf "${GITLAB_TOKEN} inside"\n'
+        "      exit 0\n"
+        "    fi\n"
         '    cat <<EOF\n'
         '{"info": {"id": "$2", "title": "fake review"}, "messages": ['
         '{"role": "user", "parts": [{"type": "text", "text": "Review the MR diff."}]}, '
@@ -587,6 +598,32 @@ def test_entrypoint_captures_session_export(tmp_path, gitlab, fake_opencode):
     assert "wrote opencode session export" in log_text
     assert FAKE_TOKEN not in log_text
     assert FAKE_TOKEN not in proc.stdout
+
+
+def test_entrypoint_preserves_truncated_session_export(tmp_path, gitlab, fake_opencode):
+    """opencode has been observed exiting 0 while printing a truncated
+    (invalid) JSON export. The raw output must be preserved — scrubbed, in a
+    JSON envelope — instead of leaving the run with no session at all."""
+    proc = _run_entrypoint(
+        tmp_path, gitlab, fake_opencode, "json",
+        extra_env={"FAKE_OPENCODE_EXPORT_TRUNCATED": "1"},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    out_dir = tmp_path / "out"
+    session = json.loads((out_dir / "session.json").read_text(encoding="utf-8"))
+    assert "invalid JSON" in session["warning"]
+    assert "Unterminated string" in session["parse_error"]
+    assert "thinking with secret" in session["raw"]
+    # the raw transcript is untrusted on the host bind mount: scrubbed like
+    # a parsed export
+    assert FAKE_TOKEN not in json.dumps(session)
+    assert "***" in session["raw"]
+
+    log_text = (out_dir / "review.log").read_text(encoding="utf-8")
+    assert "preserving the raw output" in log_text
+    assert FAKE_TOKEN not in log_text
+    assert log_text.rstrip("\n").endswith("EXIT=0")
 
 
 def test_entrypoint_session_capture_failure_does_not_fail_run(tmp_path, gitlab):
