@@ -13,7 +13,9 @@
   <p class="{{ 'error' if sync_error else 'hint' }}">{{ sync_message }}</p>
   {% endif %}
   {% if mrs %}
+  <p class="hint">Showing {{ page_start }}&ndash;{{ page_end }} of {{ total }} merge requests.</p>
   <form method="post" action="/mrs/schedule-selected">
+  <input type="hidden" name="page" value="{{ page }}">
   <table class="mr-table">
     <thead>
       <tr>
@@ -70,10 +72,22 @@
     and the known library projects from Settings.</span>
   </p>
   </form>
+  {% if pages > 1 %}
+  <nav class="pagination">
+    {% if page > 1 %}
+    <a class="btn small" href="/mrs?page={{ page - 1 }}">&larr; Prev</a>
+    {% endif %}
+    <span class="hint">Page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}
+    <a class="btn small" href="/mrs?page={{ page + 1 }}">Next &rarr;</a>
+    {% endif %}
+  </nav>
+  {% endif %}
   {% else %}
   <p class="hint">No open merge requests cached yet — click Refresh to fetch them from GitLab.</p>
   {% endif %}
-  <button type="button" class="btn" hx-post="/mrs/sync" hx-target="#mr-list" hx-swap="outerHTML">
+  <button type="button" class="btn" hx-post="/mrs/sync" hx-target="#mr-list" hx-swap="outerHTML"
+          hx-vals='{{ {"page": page} | tojson }}'>
     Refresh
   </button>
 </div>

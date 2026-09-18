@@ -61,6 +61,24 @@ SNAPSHOTS = [
 ]
 
 
+def make_snapshots(n, start=1, state="opened"):
+    """n consecutive snapshots with iids start..start+n-1."""
+    return [
+        MrSnapshot(
+            iid=start + i,
+            title=f"MR {start + i}",
+            author="alice",
+            source_branch=f"feature-{start + i}",
+            target_branch="main",
+            sha="a" * 40,
+            web_url=f"https://gitlab.example.com/group/proj/-/merge_requests/{start + i}",
+            state=state,
+            updated_at=None,
+        )
+        for i in range(n)
+    ]
+
+
 def install_fake_client(monkeypatch, snapshots=None, exc=None):
     class FakeClient:
         def __init__(self, settings_row):
@@ -219,8 +237,86 @@ def test_mrs_sync_shows_merged_after_upstream_merge(authed, db, monkeypatch):
     assert _row_cells(resp, 2)[4] == "merged"
     assert resp.text.count('name="mr_iids"') == 1
 
-    page = authed.get("/mrs")
+    page = authed.get("/mrs", params={"state": "all"})
     assert _row_cells(page, 2)[4] == "merged"
+
+
+# -- pagination -----------------------------------------------------------------
+
+
+def test_mrs_list_paginates(authed, db, monkeypatch):
+    configure_row(db)
+    install_fake_client(monkeypatch, snapshots=make_snapshots(30))
+    authed.post("/mrs/sync")
+
+    resp = authed.get("/mrs")
+    assert resp.status_code == 200
+    # Page 1: the 25 highest iids, a link to page 2 but no prev link.
+    assert resp.text.count('name="mr_iids"') == 25
+    assert "!30" in resp.text
+    assert "!6" in resp.text
+    assert "!5" not in resp.text
+    assert "Showing 1&ndash;25 of 30 merge requests." in resp.text
+    assert "Page 1 of 2" in resp.text
+    assert 'href="/mrs?page=2"' in resp.text
+    assert "Prev" not in resp.text
+
+    page2 = authed.get("/mrs", params={"page": 2})
+    assert page2.status_code == 200
+    assert page2.text.count('name="mr_iids"') == 5
+    assert "!5" in page2.text
+    assert "!1" in page2.text
+    assert "Showing 26&ndash;30 of 30 merge requests." in page2.text
+    assert "Page 2 of 2" in page2.text
+    assert 'href="/mrs?page=1"' in page2.text
+    assert "Next" not in page2.text
+
+
+def test_mrs_list_page_out_of_range_clamps_to_last_page(authed, db, monkeypatch):
+    configure_row(db)
+    install_fake_client(monkeypatch, snapshots=make_snapshots(30))
+    authed.post("/mrs/sync")
+
+    resp = authed.get("/mrs", params={"page": 99})
+    assert resp.status_code == 200
+    assert "Page 2 of 2" in resp.text
+    assert resp.text.count('name="mr_iids"') == 5
+
+
+def test_mrs_list_single_page_has_no_pagination_nav(authed, db, monkeypatch):
+    configure_row(db)
+    install_fake_client(monkeypatch, snapshots=make_snapshots(10))
+    authed.post("/mrs/sync")
+
+    resp = authed.get("/mrs")
+    assert resp.status_code == 200
+    assert resp.text.count('name="mr_iids"') == 10
+    assert "Showing 1&ndash;10 of 10 merge requests." in resp.text
+    assert 'href="/mrs?page="' not in resp.text
+
+
+def test_mrs_sync_keeps_page(authed, db, monkeypatch):
+    configure_row(db)
+    install_fake_client(monkeypatch, snapshots=make_snapshots(30))
+    authed.post("/mrs/sync")
+
+    resp = authed.post("/mrs/sync", data={"page": "2"})
+    assert resp.status_code == 200
+    assert "Page 2 of 2" in resp.text
+    assert resp.text.count('name="mr_iids"') == 5
+
+
+def test_schedule_selected_keeps_page(authed, db, monkeypatch):
+    _schedule_setup(authed, db, monkeypatch, snapshots=make_snapshots(30))
+
+    resp = authed.post(
+        "/mrs/schedule-selected",
+        data={"mr_iids": ["3"], "schedule_type": "immediate", "page": "2"},
+    )
+    assert resp.status_code == 200
+    assert "scheduled 1 review" in resp.text.lower()
+    assert "Page 2 of 2" in resp.text
+    assert resp.text.count('name="mr_iids"') == 5
 
 
 def test_mr_detail_renders_snapshot_and_schedule_hook(authed, db, monkeypatch):
@@ -319,10 +415,12 @@ def test_mrs_list_checkbox_only_for_open_mrs(authed, db, monkeypatch):
     assert _row_cells(resp, 2)[-2:] == ["0", "0"]  # counts still shown for merged MRs
 
 
-def _schedule_setup(authed, db, monkeypatch, *, profile_name="claude", libraries=None):
+def _schedule_setup(
+    authed, db, monkeypatch, *, profile_name="claude", libraries=None, snapshots=None
+):
     """Configured row + synced MRs + a default profile; returns the profile."""
     configure_row(db)
-    install_fake_client(monkeypatch)
+    install_fake_client(monkeypatch, snapshots=snapshots)
     authed.post("/mrs/sync")
     if libraries is not None:
         row = get_settings_row(db)

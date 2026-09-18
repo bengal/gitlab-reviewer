@@ -1,5 +1,7 @@
 """Merge request list and detail routes (with HTMX sync)."""
 
+import math
+
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
@@ -13,6 +15,8 @@ from app.services.mr_sync import sync_open_mrs
 
 router = APIRouter()
 
+MR_PAGE_SIZE = 25
+
 
 def _configured(row) -> bool:
     return bool(row.gitlab_url.strip() and row.gitlab_project.strip() and row.gitlab_token.strip())
@@ -22,14 +26,31 @@ def _templates(request: Request):
     return request.app.state.templates
 
 
-def _list_mrs(db: Session, row) -> list[MergeRequest]:
-    return list(
+def _list_mrs(db: Session, row, page: int = 1) -> tuple[list[MergeRequest], int, int]:
+    """Cached MRs of the configured project (highest iid first), one page at a time.
+
+    Returns ``(page_items, total_count, effective_page)``; an out-of-range
+    ``page`` (e.g. a stale link after the list shrank) is clamped to the last
+    page, never an error.
+    """
+    total = db.scalar(
+        select(func.count())
+        .select_from(
+            select(MergeRequest.id).where(MergeRequest.project == row.gitlab_project).subquery()
+        )
+    ) or 0
+    pages = max(1, math.ceil(total / MR_PAGE_SIZE))
+    page = max(1, min(page, pages))
+    items = list(
         db.scalars(
             select(MergeRequest)
             .where(MergeRequest.project == row.gitlab_project)
             .order_by(MergeRequest.iid.desc())
+            .offset((page - 1) * MR_PAGE_SIZE)
+            .limit(MR_PAGE_SIZE)
         )
     )
+    return items, total, page
 
 
 def _review_counts(db: Session, mrs: list[MergeRequest]) -> dict[int, tuple[int, int]]:
@@ -60,59 +81,53 @@ def _review_counts(db: Session, mrs: list[MergeRequest]) -> dict[int, tuple[int,
     return counts
 
 
+def _list_context(
+    db: Session, row, page: int, *, configured: bool, message: str | None, failed: bool
+) -> dict:
+    """Template context for the list partial: the current page slice plus the
+    pagination numbers (page, pages, row range) for the controls."""
+    mrs, total, page = _list_mrs(db, row, page=page) if configured else ([], 0, 1)
+    return {
+        "configured": configured,
+        "mrs": mrs,
+        "total": total,
+        "page": page,
+        "pages": max(1, math.ceil(total / MR_PAGE_SIZE)),
+        "page_start": (page - 1) * MR_PAGE_SIZE + 1,
+        "page_end": min(total, page * MR_PAGE_SIZE),
+        "review_counts": _review_counts(db, mrs),
+        "default_branch": row.gitlab_default_branch,
+        "sync_message": message,
+        "sync_error": failed,
+    }
+
+
 @router.get("/mrs", response_class=HTMLResponse)
-def mr_list(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+def mr_list(request: Request, page: int = 1, db: Session = Depends(get_db)) -> HTMLResponse:
     row = get_settings_row(db)
-    configured = _configured(row)
-    mrs = _list_mrs(db, row) if configured else []
-    return _templates(request).TemplateResponse(
-        request,
-        "mrs/list.html",
-        {
-            "configured": configured,
-            "mrs": mrs,
-            "review_counts": _review_counts(db, mrs),
-            "default_branch": row.gitlab_default_branch,
-            "sync_message": None,
-            "sync_error": False,
-        },
+    context = _list_context(
+        db, row, page, configured=_configured(row), message=None, failed=False
     )
+    return _templates(request).TemplateResponse(request, "mrs/list.html", context)
 
 
 @router.post("/mrs/sync", response_class=HTMLResponse)
-def mr_sync(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    """Re-fetch open MRs; re-renders the list partial (HTMX swap target)."""
+def mr_sync(request: Request, page: int = Form(1), db: Session = Depends(get_db)) -> HTMLResponse:
+    """Re-fetch open MRs; re-renders the list partial (HTMX swap target),
+    keeping the requested page."""
     row = get_settings_row(db)
     if not _configured(row):
-        return _templates(request).TemplateResponse(
-            request,
-            "mrs/partials/list.html",
-            {
-                "configured": False,
-                "mrs": [],
-                "review_counts": {},
-                "sync_message": None,
-                "sync_error": False,
-            },
+        context = _list_context(
+            db, row, page, configured=False, message=None, failed=False
         )
+        return _templates(request).TemplateResponse(request, "mrs/partials/list.html", context)
     added, updated, unchanged, error = sync_open_mrs(db)
     if error:
         message, failed = f"Sync failed: {error}", True
     else:
         message, failed = f"Synced: {added} added, {updated} updated, {unchanged} unchanged.", False
-    mrs = _list_mrs(db, row)
-    return _templates(request).TemplateResponse(
-        request,
-        "mrs/partials/list.html",
-        {
-            "configured": True,
-            "mrs": mrs,
-            "review_counts": _review_counts(db, mrs),
-            "default_branch": row.gitlab_default_branch,
-            "sync_message": message,
-            "sync_error": failed,
-        },
-    )
+    context = _list_context(db, row, page, configured=True, message=message, failed=failed)
+    return _templates(request).TemplateResponse(request, "mrs/partials/list.html", context)
 
 
 @router.post("/mrs/schedule-selected", response_class=HTMLResponse)
@@ -121,23 +136,18 @@ def schedule_selected_mrs(
     db: Session = Depends(get_db),
     mr_iids: list[str] = Form(default=[]),
     schedule_type: str = Form("immediate"),
+    page: int = Form(1),
 ) -> HTMLResponse:
     """Batch-schedule reviews for the selected open MRs using the default
     model profile and the known library projects from settings. Re-renders
-    the list partial (HTMX swap target); also works as a plain form POST."""
+    the list partial (HTMX swap target), keeping the current page; also works
+    as a plain form POST."""
     row = get_settings_row(db)
     if not _configured(row):
-        return _templates(request).TemplateResponse(
-            request,
-            "mrs/partials/list.html",
-            {
-                "configured": False,
-                "mrs": [],
-                "review_counts": {},
-                "sync_message": None,
-                "sync_error": False,
-            },
+        context = _list_context(
+            db, row, page, configured=False, message=None, failed=False
         )
+        return _templates(request).TemplateResponse(request, "mrs/partials/list.html", context)
     message, failed = None, False
     profile = db.scalar(
         select(ModelProfile).order_by(ModelProfile.is_default.desc(), ModelProfile.name).limit(1)
@@ -180,19 +190,8 @@ def schedule_selected_mrs(
                     else f"nightly (after {row.nightly_time})"
                 )
                 message = f"Scheduled {len(selected)} review(s) — {profile.name}, {when}."
-    mrs = _list_mrs(db, row)
-    return _templates(request).TemplateResponse(
-        request,
-        "mrs/partials/list.html",
-        {
-            "configured": True,
-            "mrs": mrs,
-            "review_counts": _review_counts(db, mrs),
-            "default_branch": row.gitlab_default_branch,
-            "sync_message": message,
-            "sync_error": failed,
-        },
-    )
+    context = _list_context(db, row, page, configured=True, message=message, failed=failed)
+    return _templates(request).TemplateResponse(request, "mrs/partials/list.html", context)
 
 
 def detail_context(db: Session, mr: MergeRequest, message: str | None = None) -> dict:
