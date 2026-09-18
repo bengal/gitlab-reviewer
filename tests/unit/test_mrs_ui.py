@@ -6,6 +6,7 @@ list; the settings form saves, masks the token, validates, and can
 test the connection.
 """
 
+import dataclasses
 import json
 import re
 
@@ -183,6 +184,43 @@ def test_mrs_sync_shows_error_message(authed, db, monkeypatch):
     assert resp.status_code == 200
     assert "sync failed" in resp.text.lower()
     assert "401" in resp.text
+
+
+def test_mrs_sync_shows_merged_after_upstream_merge(authed, db, monkeypatch):
+    # Cache !1 and !2 as opened on the first refresh.
+    configure_row(db)
+    install_fake_client(monkeypatch)
+    authed.post("/mrs/sync")
+
+    merged = dataclasses.replace(SNAPSHOTS[1], state="merged")  # leave SNAPSHOTS untouched
+
+    class FakeClient:
+        def __init__(self, settings_row):
+            pass
+
+        def list_open_merge_requests(self):
+            return [SNAPSHOTS[0]]  # !2 merged upstream, no longer open
+
+        def get_project_default_branch(self):
+            return "main"
+
+        def get_merge_request(self, iid):
+            assert iid == 2
+            return merged
+
+    monkeypatch.setattr(mr_sync, "GitLabClient", FakeClient)
+
+    resp = authed.post("/mrs/sync")
+    assert resp.status_code == 200
+    # Feedback that the refresh succeeded and something changed.
+    assert "synced" in resp.text.lower()
+    assert "updated" in resp.text.lower()
+    # !2 now renders as merged (state column) and is no longer selectable.
+    assert _row_cells(resp, 2)[4] == "merged"
+    assert resp.text.count('name="mr_iids"') == 1
+
+    page = authed.get("/mrs")
+    assert _row_cells(page, 2)[4] == "merged"
 
 
 def test_mr_detail_renders_snapshot_and_schedule_hook(authed, db, monkeypatch):

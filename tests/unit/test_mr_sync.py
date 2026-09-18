@@ -47,7 +47,10 @@ def make_snapshots(sha: str | None = None) -> list[MrSnapshot]:
     ]
 
 
-def install_fake_client(monkeypatch, snapshots=None, exc=None, default_branch="main"):
+def install_fake_client(monkeypatch, snapshots=None, exc=None, default_branch="main", single=None):
+    """Fake client; ``single`` maps iid -> snapshot for get_merge_request (the
+    individual refetch used for MRs that left the open list)."""
+
     class FakeClient:
         def __init__(self, settings_row):
             pass
@@ -59,6 +62,14 @@ def install_fake_client(monkeypatch, snapshots=None, exc=None, default_branch="m
 
         def get_project_default_branch(self):
             return default_branch
+
+        def get_merge_request(self, iid):
+            if single is not None and iid in single:
+                return single[iid]
+            for snap in (snapshots if snapshots is not None else make_snapshots()):
+                if snap.iid == iid:
+                    return snap
+            raise GitLabError(f"HTTP 404 from https://gitlab.example.com: missing !{iid}")
 
     monkeypatch.setattr(mr_sync, "GitLabClient", FakeClient)
 
@@ -131,6 +142,60 @@ def test_sync_keeps_closed_rows(db, configured, monkeypatch):
     assert (added, updated, unchanged, error) == (2, 0, 0, None)
     assert db.scalar(select(MergeRequest).where(MergeRequest.iid == 99)) is not None
     assert db.scalar(select(func.count()).select_from(MergeRequest)) == 3
+
+
+def test_sync_updates_merged_mrs(db, configured, monkeypatch):
+    # First sync caches !1 and !2 as opened.
+    install_fake_client(monkeypatch)
+    assert mr_sync.sync_open_mrs(db) == (2, 0, 0, None)
+
+    # Upstream !2 gets merged, so it drops out of the open listing.
+    merged = make_snapshots()[1]
+    merged.state = "merged"
+    merged.sha = "d" * 40
+    merged.updated_at = datetime(2026, 2, 3, 4, 5, 6, tzinfo=UTC)
+    install_fake_client(monkeypatch, snapshots=[make_snapshots()[0]], single={2: merged})
+
+    added, updated, unchanged, error = mr_sync.sync_open_mrs(db)
+
+    assert (added, updated, unchanged, error) == (0, 1, 1, None)
+    second = db.scalar(select(MergeRequest).where(MergeRequest.iid == 2))
+    assert second.state == "merged"
+    assert second.sha == "d" * 40
+    assert second.updated_at == datetime(2026, 2, 3, 4, 5, 6)
+    # The still-open MR !1 is untouched.
+    assert db.scalar(select(MergeRequest).where(MergeRequest.iid == 1)).state == "opened"
+
+
+def test_sync_updates_closed_mrs(db, configured, monkeypatch):
+    install_fake_client(monkeypatch)
+    assert mr_sync.sync_open_mrs(db) == (2, 0, 0, None)
+
+    # Upstream !1 gets closed and vanishes from the open listing.
+    closed = make_snapshots()[0]
+    closed.state = "closed"
+    install_fake_client(monkeypatch, snapshots=[make_snapshots()[1]], single={1: closed})
+
+    added, updated, unchanged, error = mr_sync.sync_open_mrs(db)
+
+    assert (added, updated, unchanged, error) == (0, 1, 1, None)
+    assert db.scalar(select(MergeRequest).where(MergeRequest.iid == 1)).state == "closed"
+
+
+def test_sync_keeps_opened_state_when_refetch_fails(db, configured, monkeypatch):
+    install_fake_client(monkeypatch)
+    assert mr_sync.sync_open_mrs(db) == (2, 0, 0, None)
+    first_seen = db.scalar(select(MergeRequest).where(MergeRequest.iid == 2)).last_seen_at
+
+    # !2 is no longer in the open listing but its individual refetch fails;
+    # the last-known snapshot (and state) must be kept, never failed the sync.
+    install_fake_client(monkeypatch, snapshots=[make_snapshots()[0]], single={})
+    added, updated, unchanged, error = mr_sync.sync_open_mrs(db)
+
+    assert (added, updated, unchanged, error) == (0, 0, 1, None)
+    second = db.scalar(select(MergeRequest).where(MergeRequest.iid == 2))
+    assert second.state == "opened"
+    assert second.last_seen_at == first_seen
 
 
 def test_sync_error_returns_message_without_raising(db, configured, monkeypatch):
