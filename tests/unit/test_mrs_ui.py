@@ -9,6 +9,7 @@ test the connection.
 import dataclasses
 import json
 import re
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -407,6 +408,63 @@ def test_schedule_selected_keeps_state_filter(authed, db, monkeypatch):
     # The re-rendered partial keeps the (empty) merged view.
     assert 'value="merged" selected' in resp.text
     assert resp.text.count('name="mr_iids"') == 0
+
+
+# -- refresh in the top toolbar ----------------------------------------------------
+
+
+def _toolbar(html: str) -> str:
+    return re.search(r'<div class="mr-toolbar">.*?</div>', html, re.S).group(0)
+
+
+def test_refresh_controls_live_in_top_toolbar(authed, db, monkeypatch):
+    configure_row(db)
+    install_fake_client(monkeypatch)
+    authed.post("/mrs/sync")
+
+    resp = authed.get("/mrs")
+    assert resp.status_code == 200
+    toolbar = _toolbar(resp.text)
+    # Refresh and the in-flight indicator share the toolbar row above the table.
+    assert 'hx-post="/mrs/sync"' in toolbar
+    assert 'class="htmx-indicator' in toolbar
+    assert "Refreshing" in toolbar
+    # The sync form carries the current view so the re-render keeps it.
+    assert 'name="page"' in toolbar
+    assert 'name="state"' in toolbar
+    # The old bottom button is gone: exactly one sync trigger, above the table.
+    assert resp.text.count('hx-post="/mrs/sync"') == 1
+    assert resp.text.index("mr-toolbar") < resp.text.index('<table class="mr-table">')
+
+
+def test_sync_result_message_shows_in_toolbar(authed, db, monkeypatch):
+    configure_row(db)
+    install_fake_client(monkeypatch)
+
+    resp = authed.post("/mrs/sync")
+    assert resp.status_code == 200
+    toolbar = _toolbar(resp.text)
+    # The result message lands next to the Refresh button, not at the bottom.
+    assert "synced" in toolbar.lower()
+    assert "Refreshing" in toolbar  # the indicator re-renders for the next click
+
+
+def test_sync_error_message_shows_in_toolbar(authed, db, monkeypatch):
+    configure_row(db)
+    install_fake_client(monkeypatch, exc=GitLabError("HTTP 401 from https://gitlab.example.com: bad token"))
+
+    resp = authed.post("/mrs/sync")
+    assert resp.status_code == 200
+    toolbar = _toolbar(resp.text)
+    assert "sync failed" in toolbar.lower()
+    assert "401" in toolbar
+
+
+def test_refresh_indicator_css_shows_during_request():
+    css = (Path(__file__).resolve().parents[2] / "app" / "static" / "css" / "app.css").read_text()
+    assert ".htmx-indicator {" in css
+    assert ".sync-form.htmx-request .htmx-indicator" in css
+    assert "display: inline" in css
 
 
 def test_mr_detail_renders_snapshot_and_schedule_hook(authed, db, monkeypatch):

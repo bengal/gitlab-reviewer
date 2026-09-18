@@ -9,20 +9,32 @@
 </div>
 {% else %}
 <div id="mr-list">
-  {% if sync_message %}
-  <p class="{{ 'error' if sync_error else 'hint' }}">{{ sync_message }}</p>
-  {% endif %}
-  <form class="filter-form" method="get" action="/mrs">
-    <label>State
-      <select name="state">
-        <option value="opened"{% if state == "opened" %} selected{% endif %}>Open</option>
-        <option value="merged"{% if state == "merged" %} selected{% endif %}>Merged</option>
-        <option value="closed"{% if state == "closed" %} selected{% endif %}>Closed</option>
-        <option value="all"{% if state == "all" %} selected{% endif %}>All</option>
-      </select>
-    </label>
-    <button type="submit" class="btn">Filter</button>
-  </form>
+  {# Top toolbar: Refresh (with in-flight indicator and the sync result
+     message next to it), the state filter, so feedback for a refresh shows
+     up where the button is instead of at the other end of a long list. #}
+  <div class="mr-toolbar">
+    <form class="sync-form" method="post" action="/mrs/sync"
+          hx-post="/mrs/sync" hx-target="#mr-list" hx-swap="outerHTML">
+      <input type="hidden" name="page" value="{{ page }}">
+      <input type="hidden" name="state" value="{{ state }}">
+      <button type="submit" class="btn">Refresh</button>
+      <span class="htmx-indicator sync-indicator">Refreshing&hellip;</span>
+    </form>
+    <form class="filter-form" method="get" action="/mrs">
+      <label>State
+        <select name="state">
+          <option value="opened"{% if state == "opened" %} selected{% endif %}>Open</option>
+          <option value="merged"{% if state == "merged" %} selected{% endif %}>Merged</option>
+          <option value="closed"{% if state == "closed" %} selected{% endif %}>Closed</option>
+          <option value="all"{% if state == "all" %} selected{% endif %}>All</option>
+        </select>
+      </label>
+      <button type="submit" class="btn">Filter</button>
+    </form>
+    {% if sync_message %}
+    <span class="{{ 'error' if sync_error else 'hint' }}">{{ sync_message }}</span>
+    {% endif %}
+  </div>
   {% if mrs %}
   <p class="hint">Showing {{ page_start }}&ndash;{{ page_end }} of {{ total }}{% if state_label %} {{ state_label }}{% endif %} merge requests.</p>
   <form method="post" action="/mrs/schedule-selected">
@@ -100,9 +112,5 @@
   {% else %}
   <p class="hint">{{ empty_hint }}</p>
   {% endif %}
-  <button type="button" class="btn" hx-post="/mrs/sync" hx-target="#mr-list" hx-swap="outerHTML"
-          hx-vals='{{ {"page": page, "state": state} | tojson }}'>
-    Refresh
-  </button>
 </div>
 {% endif %}

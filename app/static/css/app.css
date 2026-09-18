@@ -179,6 +179,40 @@ code {
   white-space: nowrap;
 }
 
+/* MR list toolbar: Refresh (with in-flight indicator + sync result message)
+   and the state filter share one row above the table. */
+.mr-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.mr-toolbar .filter-form {
+  margin: 0;
+}
+
+.mr-toolbar .btn {
+  margin-top: 0;
+}
+
+/* In-place refresh feedback: hidden until the sync request is in flight
+   (HTMX adds .htmx-request to the form that issued it), then shown right
+   next to the Refresh button; the sync result message takes over the spot
+   once the response swaps the list in. */
+.htmx-indicator {
+  display: none;
+}
+
+.sync-form.htmx-request .htmx-indicator {
+  display: inline;
+}
+
+.sync-indicator {
+  color: #0969da;
+}
+
 /* Pagination controls under the MR table: Prev / "Page X of Y" / Next. */
 .pagination {
   display: flex;
