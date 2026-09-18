@@ -228,7 +228,7 @@ def test_mrs_sync_shows_merged_after_upstream_merge(authed, db, monkeypatch):
 
     monkeypatch.setattr(mr_sync, "GitLabClient", FakeClient)
 
-    resp = authed.post("/mrs/sync")
+    resp = authed.post("/mrs/sync", data={"state": "all"})
     assert resp.status_code == 200
     # Feedback that the refresh succeeded and something changed.
     assert "synced" in resp.text.lower()
@@ -237,8 +237,10 @@ def test_mrs_sync_shows_merged_after_upstream_merge(authed, db, monkeypatch):
     assert _row_cells(resp, 2)[4] == "merged"
     assert resp.text.count('name="mr_iids"') == 1
 
-    page = authed.get("/mrs", params={"state": "all"})
-    assert _row_cells(page, 2)[4] == "merged"
+    page = authed.get("/mrs")
+    assert "!2" not in page.text  # the open-only default hides the merged MR
+    page_all = authed.get("/mrs", params={"state": "all"})
+    assert _row_cells(page_all, 2)[4] == "merged"
 
 
 # -- pagination -----------------------------------------------------------------
@@ -256,7 +258,7 @@ def test_mrs_list_paginates(authed, db, monkeypatch):
     assert "!30" in resp.text
     assert "!6" in resp.text
     assert "!5" not in resp.text
-    assert "Showing 1&ndash;25 of 30 merge requests." in resp.text
+    assert "Showing 1&ndash;25 of 30 open merge requests." in resp.text
     assert "Page 1 of 2" in resp.text
     assert 'href="/mrs?page=2"' in resp.text
     assert "Prev" not in resp.text
@@ -266,7 +268,7 @@ def test_mrs_list_paginates(authed, db, monkeypatch):
     assert page2.text.count('name="mr_iids"') == 5
     assert "!5" in page2.text
     assert "!1" in page2.text
-    assert "Showing 26&ndash;30 of 30 merge requests." in page2.text
+    assert "Showing 26&ndash;30 of 30 open merge requests." in page2.text
     assert "Page 2 of 2" in page2.text
     assert 'href="/mrs?page=1"' in page2.text
     assert "Next" not in page2.text
@@ -291,7 +293,7 @@ def test_mrs_list_single_page_has_no_pagination_nav(authed, db, monkeypatch):
     resp = authed.get("/mrs")
     assert resp.status_code == 200
     assert resp.text.count('name="mr_iids"') == 10
-    assert "Showing 1&ndash;10 of 10 merge requests." in resp.text
+    assert "Showing 1&ndash;10 of 10 open merge requests." in resp.text
     assert 'href="/mrs?page="' not in resp.text
 
 
@@ -317,6 +319,94 @@ def test_schedule_selected_keeps_page(authed, db, monkeypatch):
     assert "scheduled 1 review" in resp.text.lower()
     assert "Page 2 of 2" in resp.text
     assert resp.text.count('name="mr_iids"') == 5
+
+
+# -- state filter -----------------------------------------------------------------
+
+
+def test_mrs_list_defaults_to_open_only(authed, db, monkeypatch):
+    configure_row(db)
+    merged = dataclasses.replace(make_snapshots(1, start=2)[0], state="merged")
+    closed = dataclasses.replace(make_snapshots(1, start=3)[0], state="closed")
+    install_fake_client(monkeypatch, snapshots=[*make_snapshots(1), merged, closed])
+    authed.post("/mrs/sync")
+
+    resp = authed.get("/mrs")
+    assert resp.status_code == 200
+    # The default view shows only open MRs.
+    assert resp.text.count('name="mr_iids"') == 1
+    assert "!1" in resp.text
+    assert 'href="/mrs/2"' not in resp.text
+    assert 'href="/mrs/3"' not in resp.text
+    assert 'value="opened" selected' in resp.text
+    assert "of 1 open merge requests." in resp.text
+
+
+def test_mrs_list_state_filter(authed, db, monkeypatch):
+    configure_row(db)
+    merged = dataclasses.replace(make_snapshots(1, start=2)[0], state="merged")
+    closed = dataclasses.replace(make_snapshots(1, start=3)[0], state="closed")
+    install_fake_client(monkeypatch, snapshots=[*make_snapshots(1), merged, closed])
+    authed.post("/mrs/sync")
+
+    merged_view = authed.get("/mrs", params={"state": "merged"})
+    assert merged_view.text.count('href="/mrs/') == 2  # only !2's two row links
+    assert 'value="merged" selected' in merged_view.text
+
+    closed_view = authed.get("/mrs", params={"state": "closed"})
+    assert closed_view.text.count('href="/mrs/') == 2
+    assert "!3" in closed_view.text
+
+    all_view = authed.get("/mrs", params={"state": "all"})
+    assert all_view.text.count('href="/mrs/') == 6
+    assert "of 3 merge requests." in all_view.text
+
+    # Unknown state values fall back to the open-only default.
+    unknown = authed.get("/mrs", params={"state": "bogus"})
+    assert unknown.text.count('href="/mrs/') == 2
+
+
+def test_mrs_state_filter_combines_with_pagination(authed, db, monkeypatch):
+    configure_row(db)
+    snaps = make_snapshots(30)
+    snaps += [dataclasses.replace(s, state="merged") for s in make_snapshots(5, start=31)]
+    install_fake_client(monkeypatch, snapshots=snaps)
+    authed.post("/mrs/sync")
+
+    # Default (open only): 30 open MRs -> 2 pages.
+    resp = authed.get("/mrs", params={"page": 2})
+    assert "Page 2 of 2" in resp.text
+    assert resp.text.count('name="mr_iids"') == 5  # iids 5..1
+
+    # All states: 35 MRs -> 2 pages, page 2 has 10 rows, links carry the state.
+    all_p2 = authed.get("/mrs", params={"page": 2, "state": "all"})
+    assert all_p2.text.count('href="/mrs/') == 20
+    assert 'href="/mrs?page=1&amp;state=all"' in all_p2.text
+
+
+def test_mrs_sync_keeps_state_filter(authed, db, monkeypatch):
+    configure_row(db)
+    install_fake_client(monkeypatch, snapshots=make_snapshots(3))
+    authed.post("/mrs/sync")
+
+    resp = authed.post("/mrs/sync", data={"state": "merged"})
+    assert resp.status_code == 200
+    assert 'value="merged" selected' in resp.text
+    assert "No merged merge requests cached" in resp.text
+
+
+def test_schedule_selected_keeps_state_filter(authed, db, monkeypatch):
+    _schedule_setup(authed, db, monkeypatch)
+
+    resp = authed.post(
+        "/mrs/schedule-selected",
+        data={"mr_iids": ["1"], "schedule_type": "immediate", "state": "merged"},
+    )
+    assert resp.status_code == 200
+    assert "scheduled 1 review" in resp.text.lower()
+    # The re-rendered partial keeps the (empty) merged view.
+    assert 'value="merged" selected' in resp.text
+    assert resp.text.count('name="mr_iids"') == 0
 
 
 def test_mr_detail_renders_snapshot_and_schedule_hook(authed, db, monkeypatch):
@@ -410,7 +500,7 @@ def test_mrs_list_checkbox_only_for_open_mrs(authed, db, monkeypatch):
     by_iid[2].state = "merged"
     db.commit()
 
-    resp = authed.get("/mrs")
+    resp = authed.get("/mrs", params={"state": "all"})
     assert resp.text.count('name="mr_iids"') == 1  # only the open MR is selectable
     assert _row_cells(resp, 2)[-2:] == ["0", "0"]  # counts still shown for merged MRs
 

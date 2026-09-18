@@ -16,6 +16,8 @@ from app.services.mr_sync import sync_open_mrs
 router = APIRouter()
 
 MR_PAGE_SIZE = 25
+MR_STATES = ("all", "opened", "merged", "closed")
+_STATE_LABELS = {"all": "", "opened": "open", "merged": "merged", "closed": "closed"}
 
 
 def _configured(row) -> bool:
@@ -26,25 +28,43 @@ def _templates(request: Request):
     return request.app.state.templates
 
 
-def _list_mrs(db: Session, row, page: int = 1) -> tuple[list[MergeRequest], int, int]:
+def _norm_state(state: str) -> str:
+    """The state filter for the list; unknown values fall back to the
+    default (open MRs only)."""
+    return state if state in MR_STATES else "opened"
+
+
+def _empty_hint(state: str) -> str:
+    if state == "all":
+        return "No merge requests cached yet — click Refresh to fetch them from GitLab."
+    return (
+        f"No {_STATE_LABELS[state]} merge requests cached — click Refresh or "
+        "pick a different state."
+    )
+
+
+def _list_mrs(
+    db: Session, row, page: int = 1, state: str = "opened"
+) -> tuple[list[MergeRequest], int, int]:
     """Cached MRs of the configured project (highest iid first), one page at a time.
 
+    ``state`` filters on the cached MR state; "all" shows everything.
     Returns ``(page_items, total_count, effective_page)``; an out-of-range
     ``page`` (e.g. a stale link after the list shrank) is clamped to the last
     page, never an error.
     """
+    cond = MergeRequest.project == row.gitlab_project
+    if state != "all":
+        cond = cond & (MergeRequest.state == state)
     total = db.scalar(
-        select(func.count())
-        .select_from(
-            select(MergeRequest.id).where(MergeRequest.project == row.gitlab_project).subquery()
-        )
+        select(func.count()).select_from(select(MergeRequest.id).where(cond).subquery())
     ) or 0
     pages = max(1, math.ceil(total / MR_PAGE_SIZE))
     page = max(1, min(page, pages))
     items = list(
         db.scalars(
             select(MergeRequest)
-            .where(MergeRequest.project == row.gitlab_project)
+            .where(cond)
             .order_by(MergeRequest.iid.desc())
             .offset((page - 1) * MR_PAGE_SIZE)
             .limit(MR_PAGE_SIZE)
@@ -82,11 +102,19 @@ def _review_counts(db: Session, mrs: list[MergeRequest]) -> dict[int, tuple[int,
 
 
 def _list_context(
-    db: Session, row, page: int, *, configured: bool, message: str | None, failed: bool
+    db: Session,
+    row,
+    page: int,
+    state: str,
+    *,
+    configured: bool,
+    message: str | None,
+    failed: bool,
 ) -> dict:
     """Template context for the list partial: the current page slice plus the
-    pagination numbers (page, pages, row range) for the controls."""
-    mrs, total, page = _list_mrs(db, row, page=page) if configured else ([], 0, 1)
+    pagination numbers (page, pages, row range) and the state filter."""
+    state = _norm_state(state)
+    mrs, total, page = _list_mrs(db, row, page=page, state=state) if configured else ([], 0, 1)
     return {
         "configured": configured,
         "mrs": mrs,
@@ -95,6 +123,9 @@ def _list_context(
         "pages": max(1, math.ceil(total / MR_PAGE_SIZE)),
         "page_start": (page - 1) * MR_PAGE_SIZE + 1,
         "page_end": min(total, page * MR_PAGE_SIZE),
+        "state": state,
+        "state_label": _STATE_LABELS[state],
+        "empty_hint": _empty_hint(state),
         "review_counts": _review_counts(db, mrs),
         "default_branch": row.gitlab_default_branch,
         "sync_message": message,
@@ -103,22 +134,32 @@ def _list_context(
 
 
 @router.get("/mrs", response_class=HTMLResponse)
-def mr_list(request: Request, page: int = 1, db: Session = Depends(get_db)) -> HTMLResponse:
+def mr_list(
+    request: Request,
+    page: int = 1,
+    state: str = "opened",
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
     row = get_settings_row(db)
     context = _list_context(
-        db, row, page, configured=_configured(row), message=None, failed=False
+        db, row, page, state, configured=_configured(row), message=None, failed=False
     )
     return _templates(request).TemplateResponse(request, "mrs/list.html", context)
 
 
 @router.post("/mrs/sync", response_class=HTMLResponse)
-def mr_sync(request: Request, page: int = Form(1), db: Session = Depends(get_db)) -> HTMLResponse:
+def mr_sync(
+    request: Request,
+    page: int = Form(1),
+    state: str = Form("opened"),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
     """Re-fetch open MRs; re-renders the list partial (HTMX swap target),
-    keeping the requested page."""
+    keeping the requested page and state filter."""
     row = get_settings_row(db)
     if not _configured(row):
         context = _list_context(
-            db, row, page, configured=False, message=None, failed=False
+            db, row, page, state, configured=False, message=None, failed=False
         )
         return _templates(request).TemplateResponse(request, "mrs/partials/list.html", context)
     added, updated, unchanged, error = sync_open_mrs(db)
@@ -126,7 +167,7 @@ def mr_sync(request: Request, page: int = Form(1), db: Session = Depends(get_db)
         message, failed = f"Sync failed: {error}", True
     else:
         message, failed = f"Synced: {added} added, {updated} updated, {unchanged} unchanged.", False
-    context = _list_context(db, row, page, configured=True, message=message, failed=failed)
+    context = _list_context(db, row, page, state, configured=True, message=message, failed=failed)
     return _templates(request).TemplateResponse(request, "mrs/partials/list.html", context)
 
 
@@ -137,15 +178,16 @@ def schedule_selected_mrs(
     mr_iids: list[str] = Form(default=[]),
     schedule_type: str = Form("immediate"),
     page: int = Form(1),
+    state: str = Form("opened"),
 ) -> HTMLResponse:
     """Batch-schedule reviews for the selected open MRs using the default
     model profile and the known library projects from settings. Re-renders
-    the list partial (HTMX swap target), keeping the current page; also works
-    as a plain form POST."""
+    the list partial (HTMX swap target), keeping the current page and state
+    filter; also works as a plain form POST."""
     row = get_settings_row(db)
     if not _configured(row):
         context = _list_context(
-            db, row, page, configured=False, message=None, failed=False
+            db, row, page, state, configured=False, message=None, failed=False
         )
         return _templates(request).TemplateResponse(request, "mrs/partials/list.html", context)
     message, failed = None, False
@@ -190,7 +232,7 @@ def schedule_selected_mrs(
                     else f"nightly (after {row.nightly_time})"
                 )
                 message = f"Scheduled {len(selected)} review(s) — {profile.name}, {when}."
-    context = _list_context(db, row, page, configured=True, message=message, failed=failed)
+    context = _list_context(db, row, page, state, configured=True, message=message, failed=failed)
     return _templates(request).TemplateResponse(request, "mrs/partials/list.html", context)
 
 

@@ -12,10 +12,22 @@
   {% if sync_message %}
   <p class="{{ 'error' if sync_error else 'hint' }}">{{ sync_message }}</p>
   {% endif %}
+  <form class="filter-form" method="get" action="/mrs">
+    <label>State
+      <select name="state">
+        <option value="opened"{% if state == "opened" %} selected{% endif %}>Open</option>
+        <option value="merged"{% if state == "merged" %} selected{% endif %}>Merged</option>
+        <option value="closed"{% if state == "closed" %} selected{% endif %}>Closed</option>
+        <option value="all"{% if state == "all" %} selected{% endif %}>All</option>
+      </select>
+    </label>
+    <button type="submit" class="btn">Filter</button>
+  </form>
   {% if mrs %}
-  <p class="hint">Showing {{ page_start }}&ndash;{{ page_end }} of {{ total }} merge requests.</p>
+  <p class="hint">Showing {{ page_start }}&ndash;{{ page_end }} of {{ total }}{% if state_label %} {{ state_label }}{% endif %} merge requests.</p>
   <form method="post" action="/mrs/schedule-selected">
   <input type="hidden" name="page" value="{{ page }}">
+  <input type="hidden" name="state" value="{{ state }}">
   <table class="mr-table">
     <thead>
       <tr>
@@ -72,22 +84,24 @@
     and the known library projects from Settings.</span>
   </p>
   </form>
+  {# & is escaped to &amp; in the rendered href (Jinja autoescape). #}
+  {% set qs = "&state=" ~ state if state != "opened" else "" %}
   {% if pages > 1 %}
   <nav class="pagination">
     {% if page > 1 %}
-    <a class="btn small" href="/mrs?page={{ page - 1 }}">&larr; Prev</a>
+    <a class="btn small" href="/mrs?page={{ page - 1 }}{{ qs }}">&larr; Prev</a>
     {% endif %}
     <span class="hint">Page {{ page }} of {{ pages }}</span>
     {% if page < pages %}
-    <a class="btn small" href="/mrs?page={{ page + 1 }}">Next &rarr;</a>
+    <a class="btn small" href="/mrs?page={{ page + 1 }}{{ qs }}">Next &rarr;</a>
     {% endif %}
   </nav>
   {% endif %}
   {% else %}
-  <p class="hint">No open merge requests cached yet — click Refresh to fetch them from GitLab.</p>
+  <p class="hint">{{ empty_hint }}</p>
   {% endif %}
   <button type="button" class="btn" hx-post="/mrs/sync" hx-target="#mr-list" hx-swap="outerHTML"
-          hx-vals='{{ {"page": page} | tojson }}'>
+          hx-vals='{{ {"page": page, "state": state} | tojson }}'>
     Refresh
   </button>
 </div>
