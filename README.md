@@ -85,12 +85,23 @@ deploy/                   compose.yaml, Containerfile (app image), quadlet/
                           units, prompts/default_review.md
 alembic/versions/         DB migrations
 tests/                    unit / integration / e2e suites
-pyproject.toml  .env.example  README.md
+pyproject.toml  .env.example  README.md  start.sh (dev start script)
 ```
 
 ## Quickstart (development)
 
 Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
+
+`./start.sh` does the whole quickstart in one go: `uv sync`, create `.env`
+from `.env.example` (first run), `alembic upgrade head`, and start uvicorn
+with `--reload` on port 8000 (override with `PORT=...`). It only needs the
+one-time secret setup below on the first run.
+
+```sh
+./start.sh
+```
+
+Manually, the steps are:
 
 ```sh
 uv sync
